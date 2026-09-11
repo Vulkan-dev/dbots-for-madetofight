@@ -547,8 +547,7 @@ export class BedrockBot extends EventEmitter {
     // user several minutes (open browser, log in, type the code).
 
     // Ensure profile/<botname>/ directory exists for permanent session caching
-    const profileFolder = `./profile/${this.accountId}`;
-    const profilesPath = TokenStorage.ensureProfilesFolder(profileFolder);
+    const profilesPath = await TokenStorage.ensureProfilesFolder(this.accountId);
 
     try {
       if (!isOffline) {
@@ -631,7 +630,7 @@ export class BedrockBot extends EventEmitter {
       }
 
         logger.info(
-          `Initiating Bedrock connection to ${this.appConfig.server.host}:${this.appConfig.server.port} (Session: ${profileFolder})...`,
+          `Initiating Bedrock connection to ${this.appConfig.server.host}:${this.appConfig.server.port} (Session: ${profilesPath})...`,
           this.accountId
         );
 
