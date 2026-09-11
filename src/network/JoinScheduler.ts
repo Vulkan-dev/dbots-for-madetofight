@@ -62,9 +62,13 @@ export class JoinScheduler {
 
       try {
         logger.info(`Starting controlled connection process for '${accountId}'...`, accountId);
-        await task();
-      } catch (err) {
-        logger.error(`Error executing scheduled join for '${accountId}'`, accountId, err);
+        // Timeout: if connect() hangs for >60s, force-release the lock
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Join task timed out after 60s')), 60000)
+        );
+        await Promise.race([task(), timeout]);
+      } catch (err: any) {
+        logger.error(`Error executing scheduled join for '${accountId}': ${err.message}`, accountId);
       } finally {
         this.activeJoins.delete(accountId);
       }

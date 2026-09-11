@@ -174,7 +174,12 @@ export class AccountManager extends EventEmitter {
     const bot = this.bots.get(accountId);
     if (!bot) { logger.warn(`Cannot connect '${accountId}': not registered`); return false; }
     const state = bot.getState();
-    if (state === ConnectionState.CONNECTED || state === ConnectionState.CONNECTING) return false;
+    if (state === ConnectionState.CONNECTED) return false;
+    // If stuck in CONNECTING from a timed-out join, force disconnect first
+    if (state === ConnectionState.CONNECTING || state === ConnectionState.RECONNECTING) {
+      logger.info(`Force-resetting stuck connection for '${accountId}'`, accountId);
+      bot.disconnect().catch(() => {});
+    }
     return this.joinScheduler.scheduleJoin(accountId, async () => { await bot.connect(); });
   }
 
