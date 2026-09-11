@@ -1,0 +1,21 @@
+node_modules
+dist
+tests
+test_cache
+.auth_tokens
+profile
+data
+bin
+bot
+scripts
+rdp
+Donut-v1
+.my friends
+*.rar
+*.zip
+.env
+.git
+.gitignore
+config.yaml
+config.example.yaml
+nixpacks.toml
