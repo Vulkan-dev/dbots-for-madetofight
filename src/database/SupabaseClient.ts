@@ -128,10 +128,13 @@ export async function initSupabaseSchema(): Promise<void> {
 // ─── Node Registry ──────────────────────────────────────────────────────────────
 export async function registerNode(id: string, name: string, url: string, owner: string): Promise<void> {
   const client = getSupabaseClient();
-  await client.from('backend_nodes').upsert({
+  const { error } = await client.from('backend_nodes').upsert({
     id, name, url, owner, status: 'online',
     last_heartbeat: new Date().toISOString(),
   }, { onConflict: 'id' });
+  if (error) {
+    logger.error(`Failed to register node '${id}': ${error.message} (code: ${error.code})`);
+  }
 }
 
 export async function heartbeatNode(id: string, botCount: number): Promise<void> {
