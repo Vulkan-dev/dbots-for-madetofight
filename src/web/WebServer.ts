@@ -357,6 +357,31 @@ export class WebServer {
         res.status(500).json({ success: false, error: err?.message });
       }
     });
+
+    // ── Logs history ────────────────────────────────────────────────────────
+    this.app.get('/api/logs', (req, res) => {
+      const limit = Math.min(parseInt(req.query.limit as string) || 200, 500);
+      const buffer = logger.getBuffer();
+      res.json({ logs: buffer.slice(-limit) });
+    });
+
+    // ── Logs SSE stream ─────────────────────────────────────────────────────
+    this.app.get('/api/logs/stream', (req, res) => {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      const onLog = (entry: any) => {
+        res.write(`data: ${JSON.stringify(entry)}\n\n`);
+      };
+      logger.on('log', onLog);
+
+      req.on('close', () => {
+        logger.removeListener('log', onLog);
+      });
+    });
   }
 
   public start(): void {
