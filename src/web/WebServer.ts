@@ -31,11 +31,11 @@ export class WebServer {
 
     // CORS — allow Vercel frontend and any configured origin
     this.app.use((req, res, next) => {
-      const origin = req.headers.origin || '';
-      const allowedOrigin = this.config.webServer.frontendUrl === '*'
+      const origin = (req.headers.origin || '').replace(/\/+$/, '');
+      const allowedBase = this.config.webServer.frontendUrl === '*'
         ? '*'
-        : this.config.webServer.frontendUrl;
-      res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+        : this.config.webServer.frontendUrl.replace(/\/+$/, '');
+      res.setHeader('Access-Control-Allow-Origin', allowedBase === '*' ? '*' : origin);
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Api-Secret');
       if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
