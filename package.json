@@ -1,0 +1,39 @@
+{
+  "name": "donut-bots-backend",
+  "version": "2.0.0",
+  "description": "Donut SMP AFK bot backend — Railway + Supabase edition",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "tsc && node dist/tests/schedulerAndMath.test.js && node dist/tests/microsoftAuth.test.js && node dist/tests/accountRemovalAndRealtimeAuth.test.js && node dist/tests/nbtDesyncSafety.test.js"
+  },
+  "keywords": [
+    "minecraft",
+    "bedrock",
+    "geyser",
+    "bot",
+    "railway",
+    "supabase"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "axios": "^1.20.0",
+    "bedrock-protocol": "^3.59.0",
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "pg": "^8.23.0",
+    "prismarine-auth": "^3.1.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^26.4.1",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.0.0"
+  }
+}
