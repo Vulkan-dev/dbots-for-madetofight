@@ -51,18 +51,22 @@ export class AccountManager extends EventEmitter {
    */
   public async loadAccountsFromSupabase(): Promise<void> {
     const rows = await getAccountsForNode(this.appConfig.nodeId);
-    logger.info(`Loaded ${rows.length} account(s) from Supabase for node '${this.appConfig.nodeId}'`);
+    logger.info(`Found ${rows.length} account(s) in Supabase for node '${this.appConfig.nodeId}'`);
 
     for (const row of rows) {
-      if (!this.bots.has(row.id)) {
-        await this.instantiateBot({
-          id: row.id,
-          email: row.email || '',
-          nodeId: this.appConfig.nodeId,
-          autoConnect: row.auto_connect ?? true,
-          offline: row.offline_mode ?? false,
-          profilesFolder: '',
-        });
+      try {
+        if (!this.bots.has(row.id)) {
+          await this.instantiateBot({
+            id: row.id,
+            email: row.email || '',
+            nodeId: this.appConfig.nodeId,
+            autoConnect: row.auto_connect ?? true,
+            offline: row.offline_mode ?? false,
+            profilesFolder: '',
+          });
+        }
+      } catch (err: any) {
+        logger.error(`Failed to load account '${row.id}': ${err.message}`, row.id);
       }
     }
   }

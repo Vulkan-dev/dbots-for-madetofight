@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import './auth/patchPrismarineAuth';
 
-import { loadConfig } from './config';
+import { loadConfig, applyNodeSettings } from './config';
 import { AccountManager } from './network/AccountManager';
 import { WebServer } from './web/WebServer';
 import { DiscordBot } from './discord/DiscordBot';
@@ -14,13 +14,12 @@ import {
   markNodeOffline,
   getNodeSettings,
 } from './database/SupabaseClient';
-import { applyNodeSettings } from './config';
 
 // ── Global error guards ──────────────────────────────────────────────────────
 process.on('uncaughtException', (err: any) => {
   const msg = err?.message || err?.toString() || '';
   if (msg.includes('Invalid tag') || msg.includes('Read error') || msg.includes('Deserialization')) {
-    logger.debug(`Suppressed non-fatal library deserialization exception: ${msg}`);
+    logger.debug(`Suppressed non-fatal library exception: ${msg}`);
     return;
   }
   logger.error('Uncaught exception', undefined, err);
@@ -42,22 +41,33 @@ async function main() {
   Owner      : ${config.nodeOwner || 'N/A'}
   Server     : ${config.server.host}:${config.server.port}
   Discord    : ${config.discord.isMaster ? 'MASTER (controls all nodes)' : 'disabled'}
+  Node URL   : ${config.nodeUrl}
 ====================================================================
 `);
 
-  // ── Supabase schema init ────────────────────────────────────────────────────
-  logger.info('Initializing Supabase schema...');
+  // ── Supabase schema check ──────────────────────────────────────────────────
+  logger.info('Checking Supabase connection and schema...');
   await initSupabaseSchema();
 
   // ── Register this node in Supabase ──────────────────────────────────────────
-  await registerNode(config.nodeId, config.nodeName, config.nodeUrl, config.nodeOwner);
-  logger.info(`Node '${config.nodeId}' registered in Supabase`);
+  try {
+    await registerNode(config.nodeId, config.nodeName, config.nodeUrl, config.nodeOwner);
+    logger.info(`Node '${config.nodeId}' registered in Supabase at ${config.nodeUrl}`);
+  } catch (err: any) {
+    logger.error(`CRITICAL: Failed to register node '${config.nodeId}': ${err.message}`);
+    logger.error('Node will not appear in the frontend. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+    logger.error('Make sure the backend_nodes table exists in Supabase (run the schema SQL).');
+  }
 
   // ── Load node settings from Supabase ────────────────────────────────────────
-  const savedSettings = await getNodeSettings(config.nodeId);
-  if (savedSettings) {
-    applyNodeSettings(savedSettings);
-    logger.info('Applied node settings from Supabase');
+  try {
+    const savedSettings = await getNodeSettings(config.nodeId);
+    if (savedSettings) {
+      applyNodeSettings(savedSettings);
+      logger.info('Applied node settings from Supabase');
+    }
+  } catch (err: any) {
+    logger.debug(`Failed to load node settings: ${err.message}`);
   }
 
   // ── Account Manager + load accounts from Supabase ──────────────────────────
@@ -76,11 +86,13 @@ async function main() {
   const webServer = new WebServer(manager, config);
   webServer.start();
 
-  // ── Heartbeat — keeps this node's status green in Supabase ──────────────────
+  // ── Heartbeat ───────────────────────────────────────────────────────────────
   const heartbeatTimer = setInterval(async () => {
     try {
       await heartbeatNode(config.nodeId, manager.getAllBots().length);
-    } catch {}
+    } catch (err: any) {
+      logger.debug(`Heartbeat failed: ${err.message}`);
+    }
   }, 30000);
 
   // ── Discord Bot (only on master node) ──────────────────────────────────────
@@ -93,14 +105,17 @@ async function main() {
     logger.warn('DISCORD_MASTER=true but DISCORD_TOKEN is not set. Discord bot disabled.');
   }
 
-  // ── Graceful shutdown ───────────────────────────────────────────────────────
+  // ── Graceful shutdown (with guard) ──────────────────────────────────────────
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.warn(`Received ${signal}. Shutting down gracefully...`);
     clearInterval(heartbeatTimer);
     manager.stopStatusSync();
     manager.stopCommandPolling();
-    await markNodeOffline(config.nodeId);
-    await manager.disconnectAll();
+    try { await markNodeOffline(config.nodeId); } catch {}
+    try { await manager.disconnectAll(); } catch {}
     logger.info('Shutdown complete. Goodbye.');
     process.exit(0);
   };

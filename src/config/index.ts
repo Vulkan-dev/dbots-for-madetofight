@@ -138,9 +138,11 @@ export function loadConfig(): AppConfig {
     nodeOwner: optionalEnv('NODE_OWNER', ''),
     nodeUrl: optionalEnv(
       'NODE_URL',
-      process.env.RAILWAY_STATIC_URL
-        ? `https://${process.env.RAILWAY_STATIC_URL}`
-        : `http://localhost:${optionalInt('PORT', 3000)}`
+      process.env.RAILWAY_PUBLIC_DOMAIN
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : process.env.RAILWAY_STATIC_URL
+          ? `https://${process.env.RAILWAY_STATIC_URL}`
+          : `http://localhost:${optionalInt('PORT', 3000)}`
     ),
 
     supabase: {

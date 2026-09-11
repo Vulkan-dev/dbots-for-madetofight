@@ -1,5 +1,5 @@
 import express from 'express';
-import { AppConfig } from '../config';
+import { AppConfig, applyNodeSettings } from '../config';
 import { AccountManager } from '../network/AccountManager';
 import { PermissionStorage } from '../storage/PermissionStorage';
 import { IgnoreListStorage } from '../storage/IgnoreListStorage';
@@ -22,24 +22,22 @@ export class WebServer {
     this.manager = manager;
     this.config = config;
     this.port = config.webServer.port;
-    this.configureMidleware();
+    this.configureMiddleware();
     this.configureRoutes();
   }
 
-  private configureMidleware(): void {
-    this.app.use(express.json());
+  private configureMiddleware(): void {
+    this.app.use(express.json({ limit: '1mb' }));
 
-    // CORS — allow Vercel frontend and any configured origin
+    // CORS — normalize trailing slashes on both sides
     this.app.use((req, res, next) => {
       const origin = req.headers.origin || '';
       const normOrigin = origin.replace(/\/+$/, '');
-      const normAllowed = this.config.webServer.frontendUrl === '*'
+      const allowedBase = this.config.webServer.frontendUrl === '*'
         ? '*'
         : this.config.webServer.frontendUrl.replace(/\/+$/, '');
-      if (normAllowed === '*') {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-      } else if (normOrigin === normAllowed) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
+      if (normOrigin && (allowedBase === '*' || normOrigin === allowedBase)) {
+        res.setHeader('Access-Control-Allow-Origin', origin || '*');
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Api-Secret');
@@ -47,11 +45,11 @@ export class WebServer {
       next();
     });
 
-    // Optional API secret validation
+    // Optional API secret validation (header only — no query param)
     this.app.use('/api/', (req, res, next) => {
       const secret = this.config.webServer.apiSecret;
-      if (!secret) { next(); return; } // no secret = open API
-      const provided = req.headers['x-api-secret'] || req.query['apiSecret'];
+      if (!secret) { next(); return; }
+      const provided = req.headers['x-api-secret'];
       if (provided === secret) { next(); return; }
       res.status(401).json({ success: false, error: 'Unauthorized' });
     });
@@ -59,7 +57,7 @@ export class WebServer {
 
   private configureRoutes(): void {
     // ── Health check ────────────────────────────────────────────────────────
-    this.app.get('/health', (req, res) => {
+    this.app.get('/health', (_req, res) => {
       res.json({
         status: 'ok',
         nodeId: this.config.nodeId,
@@ -70,7 +68,7 @@ export class WebServer {
       });
     });
 
-    this.app.get('/api/health', (req, res) => {
+    this.app.get('/api/health', (_req, res) => {
       res.json({
         status: 'ok',
         nodeId: this.config.nodeId,
@@ -81,8 +79,8 @@ export class WebServer {
       });
     });
 
-    // ── Status (this node's bots only) ──────────────────────────────────────
-    this.app.get('/api/status', (req, res) => {
+    // ── Status ──────────────────────────────────────────────────────────────
+    this.app.get('/api/status', (_req, res) => {
       res.json({
         nodeId: this.config.nodeId,
         nodeName: this.config.nodeName,
@@ -91,8 +89,8 @@ export class WebServer {
       });
     });
 
-    // ── All nodes (read from Supabase) ──────────────────────────────────────
-    this.app.get('/api/nodes', async (req, res) => {
+    // ── All nodes ───────────────────────────────────────────────────────────
+    this.app.get('/api/nodes', async (_req, res) => {
       try {
         const nodes = await getAllNodes();
         res.json({ nodes });
@@ -105,25 +103,22 @@ export class WebServer {
     this.app.post('/api/accounts/add', async (req, res) => {
       const { id, email } = req.body;
       if (!id || typeof id !== 'string') {
-        res.status(400).json({ success: false, error: 'Account ID is required' });
-        return;
+        res.status(400).json({ success: false, error: 'Account ID is required' }); return;
       }
       if (!email || typeof email !== 'string') {
-        res.status(400).json({ success: false, error: 'Email is required' });
-        return;
+        res.status(400).json({ success: false, error: 'Email is required' }); return;
       }
       if (this.manager.getBot(id)) {
-        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` });
-        return;
+        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` }); return;
       }
       try {
         const bot = await this.manager.addAccount(id, email);
 
-        const codeInfo = await new Promise<any>((resolve, reject) => {
+        const codeInfo = await new Promise<any>((resolve) => {
           let resolved = false;
           const timeout = setTimeout(() => {
             if (!resolved) { resolved = true; bot.authManager.removeListener('msaCode', onCode); resolve(null); }
-          }, 15000);
+          }, 20000);
           const onCode = (data: any) => {
             if (!resolved) { resolved = true; clearTimeout(timeout); bot.authManager.removeListener('msaCode', onCode); resolve(data); }
           };
@@ -142,50 +137,49 @@ export class WebServer {
           } : null,
         });
       } catch (err: any) {
+        logger.error(`API: Failed to add account '${id}': ${err.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });
 
-    // ── Quick link login (no email required) ──────────────────────────────
+    // ── Quick link login ────────────────────────────────────────────────────
     this.app.post('/api/accounts/link', async (req, res) => {
       const { id } = req.body;
       if (!id || typeof id !== 'string') {
-        res.status(400).json({ success: false, error: 'Account ID is required' });
-        return;
+        res.status(400).json({ success: false, error: 'Account ID is required' }); return;
       }
       if (this.manager.getBot(id)) {
-        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` });
-        return;
+        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` }); return;
       }
       try {
         const bot = await this.manager.addAccount(id, `${id}@link.local`);
 
-        const codeInfo = await new Promise<any>((resolve, reject) => {
+        const codeInfo = await new Promise<any>((resolve) => {
+          let resolved = false;
           const timeout = setTimeout(() => {
-            bot.authManager.removeListener('msaCode', onCode);
-            reject(new Error('Timeout waiting for Microsoft device code (30s)'));
+            if (!resolved) { resolved = true; bot.authManager.removeListener('msaCode', onCode); resolve(null); }
           }, 30000);
-
           const onCode = (data: any) => {
-            clearTimeout(timeout);
-            resolve(data);
+            if (!resolved) { resolved = true; clearTimeout(timeout); bot.authManager.removeListener('msaCode', onCode); resolve(data); }
           };
-
           bot.authManager.on('msaCode', onCode);
           this.manager.scheduleAccountConnect(id);
         });
 
-        logger.info(`API: Link login started for '${id}' — code: ${codeInfo.user_code}`);
+        if (codeInfo) {
+          logger.info(`API: Link login started for '${id}' — code: ${codeInfo.user_code}`);
+        }
         res.json({
           success: true,
           accountId: id,
-          codeInfo: {
+          codeInfo: codeInfo ? {
             user_code: codeInfo.user_code,
             verification_uri: codeInfo.verification_uri,
             direct_verification_uri: codeInfo.direct_verification_uri,
-          },
+          } : null,
         });
       } catch (err: any) {
+        logger.error(`API: Failed link login for '${id}': ${err.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });
@@ -194,49 +188,69 @@ export class WebServer {
     this.app.post('/api/accounts/remove', async (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      await this.manager.removeAccount(accountId);
-      res.json({ success: true });
+      try {
+        await this.manager.removeAccount(accountId);
+        res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Connect ─────────────────────────────────────────────────────────────
     this.app.post('/api/accounts/connect', (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      const ok = this.manager.scheduleAccountConnect(accountId);
-      res.json({ success: ok });
+      try {
+        const ok = this.manager.scheduleAccountConnect(accountId);
+        res.json({ success: ok });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Disconnect ──────────────────────────────────────────────────────────
     this.app.post('/api/accounts/disconnect', async (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      await this.manager.disconnectAccount(accountId);
-      res.json({ success: true });
+      try {
+        await this.manager.disconnectAccount(accountId);
+        res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Clear auth & retry ──────────────────────────────────────────────────
     this.app.post('/api/accounts/clear-auth', async (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      const ok = await this.manager.clearAccountAuthAndRetry(accountId);
-      res.json({ success: ok });
+      try {
+        const ok = await this.manager.clearAccountAuthAndRetry(accountId);
+        res.json({ success: ok });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Sign out ────────────────────────────────────────────────────────────
     this.app.post('/api/accounts/signout', async (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      const ok = await this.manager.signOutAccount(accountId);
-      res.json({ success: ok });
+      try {
+        const ok = await this.manager.signOutAccount(accountId);
+        res.json({ success: ok });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Retry profile check ─────────────────────────────────────────────────
     this.app.post('/api/accounts/retry-profile', async (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      const bot = this.manager.getBot(accountId);
-      if (!bot) { res.status(404).json({ success: false, error: `Account '${accountId}' not found` }); return; }
       try {
+        const bot = this.manager.getBot(accountId);
+        if (!bot) { res.status(404).json({ success: false, error: `Account '${accountId}' not found` }); return; }
         const ok = await bot.authManager.retryProfileCheck();
         res.json({ success: ok, status: bot.authManager.getStatus(), identity: bot.authManager.getIdentity() });
       } catch (err: any) {
@@ -248,45 +262,63 @@ export class WebServer {
     this.app.post('/api/bot/action', (req, res) => {
       const { accountId, action, state, minDelay, maxDelay, degrees, distance } = req.body;
       if (!accountId || !action) {
-        res.status(400).json({ success: false, error: 'accountId and action required' });
-        return;
+        res.status(400).json({ success: false, error: 'accountId and action required' }); return;
       }
-      const result = this.manager.executeBotAction(accountId, action, state, { minDelay, maxDelay, degrees, distance });
-      res.json(result);
+      try {
+        const result = this.manager.executeBotAction(accountId, action, state, { minDelay, maxDelay, degrees, distance });
+        res.json(result);
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Bot chat ────────────────────────────────────────────────────────────
     this.app.post('/api/bot/chat', (req, res) => {
       const { accountId, message } = req.body;
       if (!accountId || !message) {
-        res.status(400).json({ success: false, error: 'accountId and message required' });
-        return;
+        res.status(400).json({ success: false, error: 'accountId and message required' }); return;
       }
-      const result = this.manager.sendBotChat(accountId, message);
-      res.json(result);
+      try {
+        const result = this.manager.sendBotChat(accountId, message);
+        res.json(result);
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── AFK controls ────────────────────────────────────────────────────────
     this.app.post('/api/afk/set', (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      res.json(this.manager.setAfkSpot(accountId));
+      try {
+        res.json(this.manager.setAfkSpot(accountId));
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     this.app.post('/api/afk/reset', (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      res.json(this.manager.resetAfkSpot(accountId));
+      try {
+        res.json(this.manager.resetAfkSpot(accountId));
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     this.app.post('/api/afk/toggle-monitor', (req, res) => {
       const { accountId } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
-      res.json(this.manager.toggleAfkMonitor(accountId));
+      try {
+        res.json(this.manager.toggleAfkMonitor(accountId));
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
-    // ── Settings (synced to Supabase node_settings) ─────────────────────────
-    this.app.get('/api/settings', async (req, res) => {
+    // ── Settings ────────────────────────────────────────────────────────────
+    this.app.get('/api/settings', async (_req, res) => {
       try {
         const settings = await getNodeSettings(this.config.nodeId);
         res.json({ settings: settings || {} });
@@ -298,8 +330,6 @@ export class WebServer {
     this.app.post('/api/settings', async (req, res) => {
       try {
         await upsertNodeSettings(this.config.nodeId, req.body);
-        // Apply to in-memory config immediately
-        const { applyNodeSettings } = require('../config');
         applyNodeSettings(req.body);
         res.json({ success: true });
       } catch (err: any) {
@@ -308,49 +338,73 @@ export class WebServer {
     });
 
     // ── Permissions ─────────────────────────────────────────────────────────
-    this.app.get('/api/permissions', async (req, res) => {
-      res.json({ allowedUsers: await PermissionStorage.getAllAllowedUsers() });
+    this.app.get('/api/permissions', async (_req, res) => {
+      try {
+        res.json({ allowedUsers: await PermissionStorage.getAllAllowedUsers() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     this.app.post('/api/permissions/add', async (req, res) => {
       const { userId, tag } = req.body;
       if (!userId) { res.status(400).json({ success: false, error: 'userId required' }); return; }
-      const ok = await PermissionStorage.addAllowedUser(userId.trim(), tag || '');
-      res.json({ success: ok, allowedUsers: await PermissionStorage.getAllAllowedUsers() });
+      try {
+        const ok = await PermissionStorage.addAllowedUser(userId.trim(), tag || '');
+        res.json({ success: ok, allowedUsers: await PermissionStorage.getAllAllowedUsers() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     this.app.post('/api/permissions/remove', async (req, res) => {
       const { userId } = req.body;
       if (!userId) { res.status(400).json({ success: false, error: 'userId required' }); return; }
-      const ok = await PermissionStorage.removeAllowedUser(userId.trim());
-      res.json({ success: ok, allowedUsers: await PermissionStorage.getAllAllowedUsers() });
+      try {
+        const ok = await PermissionStorage.removeAllowedUser(userId.trim());
+        res.json({ success: ok, allowedUsers: await PermissionStorage.getAllAllowedUsers() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     // ── Ignore list ─────────────────────────────────────────────────────────
-    this.app.get('/api/ignore', async (req, res) => {
-      res.json({ ignoredPlayers: await IgnoreListStorage.getIgnoredPlayers() });
+    this.app.get('/api/ignore', async (_req, res) => {
+      try {
+        res.json({ ignoredPlayers: await IgnoreListStorage.getIgnoredPlayers() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     this.app.post('/api/ignore/add', async (req, res) => {
       const { player } = req.body;
       if (!player) { res.status(400).json({ success: false, error: 'player required' }); return; }
-      const ok = await IgnoreListStorage.addPlayer(player.trim());
-      res.json({ success: ok, ignoredPlayers: await IgnoreListStorage.getIgnoredPlayers() });
+      try {
+        const ok = await IgnoreListStorage.addPlayer(player.trim());
+        res.json({ success: ok, ignoredPlayers: await IgnoreListStorage.getIgnoredPlayers() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
     this.app.post('/api/ignore/remove', async (req, res) => {
       const { player } = req.body;
       if (!player) { res.status(400).json({ success: false, error: 'player required' }); return; }
-      const ok = await IgnoreListStorage.removePlayer(player.trim());
-      res.json({ success: ok, ignoredPlayers: await IgnoreListStorage.getIgnoredPlayers() });
+      try {
+        const ok = await IgnoreListStorage.removePlayer(player.trim());
+        res.json({ success: ok, ignoredPlayers: await IgnoreListStorage.getIgnoredPlayers() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
     });
 
-    // ── Command bus (Vercel can also insert commands via Supabase directly) ──
+    // ── Command bus ─────────────────────────────────────────────────────────
     this.app.post('/api/command', async (req, res) => {
       const { accountId, action, payload, targetNodeId } = req.body;
       if (!action) { res.status(400).json({ success: false, error: 'action required' }); return; }
-      const nodeId = targetNodeId || this.config.nodeId;
       try {
+        const nodeId = targetNodeId || this.config.nodeId;
         await insertCommand(nodeId, accountId || null, action, payload || {});
         res.json({ success: true });
       } catch (err: any) {
@@ -359,8 +413,8 @@ export class WebServer {
     });
 
     // ── Logs history ────────────────────────────────────────────────────────
-    this.app.get('/api/logs', (req, res) => {
-      const limit = Math.min(parseInt(req.query.limit as string) || 200, 500);
+    this.app.get('/api/logs', (_req, res) => {
+      const limit = Math.min(parseInt(_req.query.limit as string) || 200, 500);
       const buffer = logger.getBuffer();
       res.json({ logs: buffer.slice(-limit) });
     });
