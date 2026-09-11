@@ -110,7 +110,13 @@ export async function initSupabaseSchema(): Promise<void> {
   const client = getSupabaseClient();
   const statements = SCHEMA.split(';').map(s => s.trim()).filter(Boolean);
   for (const sql of statements) {
-    const { error } = await client.rpc('exec_sql', { query: sql + ';' }).catch(() => ({ error: null }));
+    let error = null;
+    try {
+      const result = await client.rpc('exec_sql', { query: sql + ';' });
+      error = result.error;
+    } catch {
+      error = null;
+    }
     if (error) {
       // Use pg directly as fallback if exec_sql RPC is not available
       logger.debug(`Schema init via RPC: ${error.message || error}`);

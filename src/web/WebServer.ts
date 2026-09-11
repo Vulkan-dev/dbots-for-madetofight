@@ -121,6 +121,50 @@ export class WebServer {
       }
     });
 
+    // ── Quick link login (no email required) ──────────────────────────────
+    this.app.post('/api/accounts/link', async (req, res) => {
+      const { id } = req.body;
+      if (!id || typeof id !== 'string') {
+        res.status(400).json({ success: false, error: 'Account ID is required' });
+        return;
+      }
+      if (this.manager.getBot(id)) {
+        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` });
+        return;
+      }
+      try {
+        const bot = await this.manager.addAccount(id, `${id}@link.local`);
+
+        const codeInfo = await new Promise<any>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            bot.authManager.removeListener('msaCode', onCode);
+            reject(new Error('Timeout waiting for Microsoft device code (30s)'));
+          }, 30000);
+
+          const onCode = (data: any) => {
+            clearTimeout(timeout);
+            resolve(data);
+          };
+
+          bot.authManager.on('msaCode', onCode);
+          this.manager.scheduleAccountConnect(id);
+        });
+
+        logger.info(`API: Link login started for '${id}' — code: ${codeInfo.user_code}`);
+        res.json({
+          success: true,
+          accountId: id,
+          codeInfo: {
+            user_code: codeInfo.user_code,
+            verification_uri: codeInfo.verification_uri,
+            direct_verification_uri: codeInfo.direct_verification_uri,
+          },
+        });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
     // ── Remove account ──────────────────────────────────────────────────────
     this.app.post('/api/accounts/remove', async (req, res) => {
       const { accountId } = req.body;

@@ -96,7 +96,8 @@ export class DiscordChannelManager {
       }
 
       // Add all authorized users from PermissionStorage and config
-      const allAllowedIds = new Set<string>(PermissionStorage.getAllowedUserIds());
+      const allAllowedUsers = await PermissionStorage.getAllAllowedUsers();
+      const allAllowedIds = new Set<string>(allAllowedUsers.map(u => u.userId));
       if (this.allowedUserId && this.allowedUserId.trim()) {
         allAllowedIds.add(this.allowedUserId.trim());
       }

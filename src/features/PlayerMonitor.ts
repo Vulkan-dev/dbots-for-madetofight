@@ -57,13 +57,13 @@ export class PlayerMonitor {
   /**
    * Called when a player entity is spawned or added to the client's entity list by the server.
    */
-  public handlePlayerAdd(
+  public async handlePlayerAdd(
     runtimeId: string | bigint | number | undefined | null,
     uuid: string,
     username: string,
     position: Vector3D,
     botPosition: Vector3D
-  ): void {
+  ): Promise<void> {
     if (runtimeId == null) {
       logger.debug('[PlayerMonitor] Ignoring add_player packet: missing runtime/entity ID', this.accountId);
       return;
@@ -95,7 +95,7 @@ export class PlayerMonitor {
       this.trackedPlayers.set(key, player);
 
       // Check ignore list before dispatching notification
-      if (IgnoreListStorage.isIgnored(player.username)) {
+      if (await IgnoreListStorage.isIgnored(player.username)) {
         logger.debug(`[PlayerMonitor] Suppressed alert for ignored player: ${player.username}`, this.accountId);
         return;
       }

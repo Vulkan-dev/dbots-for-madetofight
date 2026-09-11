@@ -99,7 +99,7 @@ export class DiscordBot {
 
       // Announce Vercel frontend URL if configured
       const frontendUrl = this.appConfig?.webServer?.frontendUrl;
-      if (frontendUrl && frontendUrl !== '*' && logChannelId) {
+      if (frontendUrl && frontendUrl !== '*' && this.appConfig?.discord.logChannelId) {
         this.broadcastDashboardLink(frontendUrl).catch(() => {});
       }
     });
@@ -697,7 +697,7 @@ export class DiscordBot {
       const sub = interaction.options.getSubcommand();
       if (sub === 'add') {
         const player = interaction.options.getString('player', true);
-        const added = IgnoreListStorage.addPlayer(player);
+        const added = await IgnoreListStorage.addPlayer(player);
         if (added) {
           await interaction.reply({
             content: `Added player **${player}** to the ignore list. Bot will not notify when this player is near the farm or accesses chests.`,
@@ -707,14 +707,14 @@ export class DiscordBot {
         }
       } else if (sub === 'remove') {
         const player = interaction.options.getString('player', true);
-        const removed = IgnoreListStorage.removePlayer(player);
+        const removed = await IgnoreListStorage.removePlayer(player);
         if (removed) {
           await interaction.reply({ content: `Removed player **${player}** from the ignore list.` });
         } else {
           await interaction.reply({ content: `Player **${player}** was not found in the ignore list.` });
         }
       } else if (sub === 'list') {
-        const list = IgnoreListStorage.getIgnoredPlayers();
+        const list = await IgnoreListStorage.getIgnoredPlayers();
         if (list.length === 0) {
           await interaction.reply({ content: 'The ignore list is currently empty. All nearby players and chest interactions will trigger notifications.' });
         } else {
@@ -847,14 +847,14 @@ export class DiscordBot {
       }
 
       if (args.length === 0 || args[0].toLowerCase() === 'list') {
-        const list = IgnoreListStorage.getIgnoredPlayers();
+        const list = await IgnoreListStorage.getIgnoredPlayers();
         if (list.length === 0) {
           await message.reply('The ignore list is currently empty. All nearby players and chest interactions will trigger notifications.');
         } else {
           const embed = new EmbedBuilder()
             .setTitle('Ignored Players (Alert Suppression)')
             .setColor(0x3b82f6)
-            .setDescription(list.map((p) => `• \`${p}\``).join('\n'))
+            .setDescription(list.map((p: string) => `• \`${p}\``).join('\n'))
             .setFooter({ text: 'Bots will not notify on proximity or chest activity for these players.' })
             .setTimestamp();
           await message.reply({ embeds: [embed] });
@@ -865,7 +865,7 @@ export class DiscordBot {
       const sub = args[0].toLowerCase();
       if (sub === 'add' && args.length > 1) {
         const player = args.slice(1).join(' ').trim();
-        const added = IgnoreListStorage.addPlayer(player);
+        const added = await IgnoreListStorage.addPlayer(player);
         if (added) {
           await message.reply(`Added player **${player}** to the ignore list. Bot will not notify when this player is near the farm or accesses chests.`);
         } else {
@@ -876,7 +876,7 @@ export class DiscordBot {
 
       if ((sub === 'remove' || sub === 'del' || sub === 'delete') && args.length > 1) {
         const player = args.slice(1).join(' ').trim();
-        const removed = IgnoreListStorage.removePlayer(player);
+        const removed = await IgnoreListStorage.removePlayer(player);
         if (removed) {
           await message.reply(`Removed player **${player}** from the ignore list.`);
         } else {
@@ -887,7 +887,7 @@ export class DiscordBot {
 
       // Default: /ignore <player> adds the player
       const player = args.join(' ').trim();
-      const added = IgnoreListStorage.addPlayer(player);
+      const added = await IgnoreListStorage.addPlayer(player);
       if (added) {
         await message.reply(`Added player **${player}** to the ignore list. Bot will not notify when this player is near the farm or accesses chests.`);
       } else {

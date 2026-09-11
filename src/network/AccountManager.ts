@@ -215,9 +215,9 @@ export class AccountManager extends EventEmitter {
           pos_z: pos.z,
           afk_spot_active: bot.afkSpotTracker.isActive(),
           afk_spot: bot.afkSpotTracker.getSavedSpot(),
-          msa_code: bot.msaCodeData?.userCode ?? null,
-          msa_url: bot.msaCodeData?.verificationUri ?? null,
-          msa_direct_url: bot.msaCodeData?.directCode ?? null,
+          msa_code: bot.msaCodeData?.user_code ?? null,
+          msa_url: bot.msaCodeData?.verification_uri ?? null,
+          msa_direct_url: bot.msaCodeData?.direct_verification_uri ?? null,
           auth_status: authIdent?.status || 'IDLE',
           auth_error: bot.authErrorMessage ?? null,
         });
@@ -380,7 +380,6 @@ export class AccountManager extends EventEmitter {
         case 'look_down':  ctrl.look('down',  options?.degrees ?? 15); res = true; break;
         case 'look_left':  ctrl.look('left',  options?.degrees ?? 15); res = true; break;
         case 'look_right': ctrl.look('right', options?.degrees ?? 15); res = true; break;
-        case 'move_forward': ctrl.moveForward(options?.distance ?? 0.5); res = true; break;
         default: return { success: false, error: `Unknown action '${action}'` };
       }
       results.push({ accountId: bot.accountId, state: res, states: ctrl.getStates() });

@@ -30,13 +30,13 @@ export class ContainerMonitor {
    * Processes container interaction events received from Bedrock protocol client packets
    * (such as container_open, inventory_transaction, or block_event).
    */
-  public handleContainerInteraction(
+  public async handleContainerInteraction(
     botPosition: Vector3D,
     containerType: string,
     position: Vector3D,
     player: string = 'Unknown Player',
     playerPos?: Vector3D
-  ): void {
+  ): Promise<void> {
     if (!MathUtils.isWithinChunkRadius(botPosition, position, this.radiusChunks)) {
       return;
     }
@@ -58,7 +58,7 @@ export class ContainerMonitor {
     }
 
     // Check ignore list before notifying
-    if (IgnoreListStorage.isIgnored(player)) {
+    if (await IgnoreListStorage.isIgnored(player)) {
       logger.debug(`[ContainerMonitor] Suppressed container activity alert for ignored player: ${player}`, this.accountId);
       return;
     }

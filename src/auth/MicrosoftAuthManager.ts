@@ -191,7 +191,7 @@ export class MicrosoftAuthManager extends EventEmitter {
   public getOrCreateAuthflow(): Authflow {
     if (this.authflow) return this.authflow;
 
-    const absProfilesPath = TokenStorage.ensureProfilesFolder(this.profilesFolder);
+    const absProfilesPath = TokenStorage.getLocalProfilesFolder(this.profilesFolder);
 
     const flowOptions: any = {
       flow: 'live',
@@ -534,7 +534,7 @@ export class MicrosoftAuthManager extends EventEmitter {
   public clearCache(): void {
     logger.info('Clearing cached auth tokens...', this.accountId);
     this.stopAutoRetryTimer();
-    TokenStorage.clearProfilesFolder(this.profilesFolder);
+    TokenStorage.clearTokens(this.accountId).catch(() => { });
     this.authflow = null;
     this.xuid = null;
     this.gamertag = null;

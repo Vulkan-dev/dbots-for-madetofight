@@ -9,7 +9,6 @@ import fs from 'fs';
 import path from 'path';
 import { BedrockBot, ConnectionState } from '../network/BedrockBot';
 import { logger } from '../utils/logger';
-import { NgrokManager } from '../utils/ngrokManager';
 
 interface StoredMessageData {
   channelId: string;
@@ -98,10 +97,8 @@ export class DiscordControlEmbed {
       desc += `\n🔑 **Auth Code**: Enter \`${bot.msaCodeData.user_code}\` at ${bot.msaCodeData.verification_uri}`;
     }
 
-    const dynamicNgrok = NgrokManager.getInstance().getCachedUrl();
     const publicUrl =
       process.env.PUBLIC_BASE_URL ||
-      dynamicNgrok ||
       (process.env.NGROK_DOMAIN ? `https://${process.env.NGROK_DOMAIN.replace(/^https?:\/\//, '')}` : null);
     if (publicUrl) {
       desc += `\nDashboard: ${publicUrl}`;
@@ -180,10 +177,8 @@ export class DiscordControlEmbed {
       .setLabel('Retry Profile Check')
       .setStyle(ButtonStyle.Secondary);
 
-    const dynamicNgrok = NgrokManager.getInstance().getCachedUrl();
     const publicUrl =
       process.env.PUBLIC_BASE_URL ||
-      dynamicNgrok ||
       (process.env.NGROK_DOMAIN ? `https://${process.env.NGROK_DOMAIN.replace(/^https?:\/\//, '')}` : null);
 
     const row3Components: ButtonBuilder[] = [];

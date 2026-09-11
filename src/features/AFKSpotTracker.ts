@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 
 export class AFKSpotTracker {
   private botName: string;
+  private nodeId: string;
   private isAfkMode: boolean = false;
   private isPaused: boolean = false;
   private savedAfkSpot: Vector3D | null = null;
@@ -18,10 +19,12 @@ export class AFKSpotTracker {
 
   constructor(
     botName: string,
+    nodeId: string,
     checkIntervalMs: number = 300000,
     toleranceBlocks: number = 3.0
   ) {
     this.botName = botName;
+    this.nodeId = nodeId;
     this.checkIntervalMs = checkIntervalMs;
     this.toleranceBlocks = toleranceBlocks;
   }
@@ -42,7 +45,7 @@ export class AFKSpotTracker {
    * Activates AFK mode for the bot.
    * Runs /sethome 1 in-game, persists coordinates in location.js, and starts the check interval.
    */
-  public activateAfkMode(customCoords?: Vector3D): void {
+  public async activateAfkMode(customCoords?: Vector3D): Promise<void> {
     if (!this.getPositionCallback || !this.executeCommandCallback) {
       logger.warn('Cannot activate AFK mode: Callbacks not set.', this.botName);
       return;
@@ -62,7 +65,7 @@ export class AFKSpotTracker {
     this.executeCommandCallback('/sethome 1');
 
     // 2. Persist in location.js
-    LocationStorage.saveLocation(this.botName, this.savedAfkSpot);
+    await LocationStorage.setAfkSpot(this.botName, this.nodeId, this.savedAfkSpot);
 
     // 3. Log activity
     discordLogger.logAfkActivity(this.botName, `AFK Spot saved at ${MathUtils.formatPos(this.savedAfkSpot)}. Command /sethome 1 issued.`);
@@ -91,7 +94,7 @@ export class AFKSpotTracker {
    * Resets the AFK location by executing /delhome 1 followed by /sethome 1,
    * saving new coordinates to location.js, and restarting the 5-minute check cycle.
    */
-  public resetAfkLocation(customCoords?: Vector3D): void {
+  public async resetAfkLocation(customCoords?: Vector3D): Promise<void> {
     if (!this.getPositionCallback || !this.executeCommandCallback) {
       logger.warn('Cannot reset AFK location: Callbacks not set.', this.botName);
       return;
@@ -117,7 +120,7 @@ export class AFKSpotTracker {
     }, 500);
 
     // 3. Persist in location.js
-    LocationStorage.saveLocation(this.botName, this.savedAfkSpot);
+    await LocationStorage.setAfkSpot(this.botName, this.nodeId, this.savedAfkSpot);
 
     // 4. Log activity
     discordLogger.logAfkActivity(
@@ -133,7 +136,7 @@ export class AFKSpotTracker {
   /**
    * Deactivates AFK mode, stops the 5-minute monitoring, optionally issues /delhome 1, and removes location from storage.
    */
-  public deactivateAfkMode(deleteHome: boolean = false): void {
+  public async deactivateAfkMode(deleteHome: boolean = false): Promise<void> {
     if (deleteHome && this.executeCommandCallback) {
       logger.info('UnAFK executed. Issuing /delhome 1...', this.botName);
       this.executeCommandCallback('/delhome 1');
@@ -149,7 +152,7 @@ export class AFKSpotTracker {
     }
 
     if (deleteHome) {
-      LocationStorage.removeLocation(this.botName);
+      LocationStorage.setAfkSpot(this.botName, this.nodeId, null);
     }
     logger.info('AFK Mode Deactivated.', this.botName);
   }

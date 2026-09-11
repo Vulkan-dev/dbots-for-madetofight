@@ -126,6 +126,7 @@ export class BedrockBot extends EventEmitter {
 
     this.afkSpotTracker = new AFKSpotTracker(
       this.accountId,
+      this.appConfig.nodeId,
       appConfig.afk.checkIntervalMs ?? 300000,
       appConfig.afk.locationTolerance ?? 3.0
     );
@@ -139,7 +140,6 @@ export class BedrockBot extends EventEmitter {
     this.authManager = new MicrosoftAuthManager({
       accountId: this.accountId,
       profilesFolder: this.accountConfig.profilesFolder,
-      authTitle: this.accountConfig.authTitle,
       offline: this.accountConfig.offline ?? this.appConfig.server.offline ?? false,
     });
 
@@ -464,6 +464,10 @@ export class BedrockBot extends EventEmitter {
     return this.state;
   }
 
+  public get autoConnect(): boolean {
+    return this.accountConfig.autoConnect;
+  }
+
   private setState(newState: ConnectionState): void {
     this.state = newState;
     logger.info(`Connection state changed to: ${newState}`, this.accountId);
@@ -619,23 +623,6 @@ export class BedrockBot extends EventEmitter {
             this.accountId
           );
         }
-      } else if (this.appConfig.proxy?.relay?.enabled) {
-        connectHost = this.appConfig.proxy.relay.listenHost || '127.0.0.1';
-        if (connectHost === '0.0.0.0') connectHost = '127.0.0.1';
-        connectPort = this.appConfig.proxy.relay.listenPort || 19133;
-        proxyInfoText = `Bedrock Relay (${connectHost}:${connectPort})`;
-        logger.info(
-          `Routing Bedrock bot connection through Bedrock Relay Proxy at ${connectHost}:${connectPort} -> ${this.appConfig.server.host}:${this.appConfig.server.port}`,
-          this.accountId
-        );
-      } else if ((this.appConfig.proxy as any)?.serverProxy?.enabled && (this.appConfig.proxy as any)?.serverProxy?.host) {
-        connectHost = (this.appConfig.proxy as any).serverProxy.host;
-        connectPort = (this.appConfig.proxy as any).serverProxy.port || 19132;
-        proxyInfoText = `Server Proxy (${connectHost}:${connectPort})`;
-        logger.info(
-          `Routing Bedrock bot connection through Server Proxy at ${connectHost}:${connectPort}`,
-          this.accountId
-        );
       } else {
         logger.info(
           `No proxy assigned for account [${this.accountId}]. Joining PROXYLESS (direct connection to ${connectHost}:${connectPort}).`,
@@ -667,12 +654,6 @@ export class BedrockBot extends EventEmitter {
             this.handleMsaCode(data);
           },
         };
-
-      // If user specified a valid custom authTitle (and not the broken Android Title ID), set it;
-      // otherwise bedrock-protocol defaults to Nintendo Switch which supports device code flow
-      if (this.accountConfig.authTitle && this.accountConfig.authTitle !== '0000000048183522') {
-        clientOptions.authTitle = this.accountConfig.authTitle;
-      }
 
       this.client = createClient(clientOptions);
 
@@ -1293,7 +1274,7 @@ export class BedrockBot extends EventEmitter {
     if (this.authManager) {
       this.authManager.clearCache();
     } else {
-      TokenStorage.clearProfilesFolder(`./profile/${this.accountId}`);
+      TokenStorage.clearTokens(`./profile/${this.accountId}`);
     }
     this.authErrorMessage = null;
     this.msaCodeData = null;
