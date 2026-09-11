@@ -117,10 +117,30 @@ export class WebServer {
         return;
       }
       try {
-        await this.manager.addAccount(id, email);
-        this.manager.scheduleAccountConnect(id);
+        const bot = await this.manager.addAccount(id, email);
+
+        const codeInfo = await new Promise<any>((resolve, reject) => {
+          let resolved = false;
+          const timeout = setTimeout(() => {
+            if (!resolved) { resolved = true; bot.authManager.removeListener('msaCode', onCode); resolve(null); }
+          }, 15000);
+          const onCode = (data: any) => {
+            if (!resolved) { resolved = true; clearTimeout(timeout); bot.authManager.removeListener('msaCode', onCode); resolve(data); }
+          };
+          bot.authManager.on('msaCode', onCode);
+          this.manager.scheduleAccountConnect(id);
+        });
+
         logger.info(`API: Added account '${id}'`);
-        res.json({ success: true, accountId: id });
+        res.json({
+          success: true,
+          accountId: id,
+          codeInfo: codeInfo ? {
+            user_code: codeInfo.user_code,
+            verification_uri: codeInfo.verification_uri,
+            direct_verification_uri: codeInfo.direct_verification_uri,
+          } : null,
+        });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }
