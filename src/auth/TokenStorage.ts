@@ -28,14 +28,31 @@ export class TokenStorage {
       fs.mkdirSync(folderPath, { recursive: true, mode: 0o700 });
     }
 
-    // Try to restore saved token from Supabase
+    // Try to restore saved tokens from Supabase
     try {
       const saved = await loadAuthToken(accountId);
       if (saved) {
-        const filePath = path.join(folderPath, saved.file_name);
-        if (!fs.existsSync(filePath)) {
-          fs.writeFileSync(filePath, saved.token_data, 'utf8');
-          logger.info(`Restored auth token for '${accountId}' from Supabase`, accountId);
+        // New bundled format: all files in one JSON blob
+        if (saved.file_name === '__bundle__') {
+          const bundled: Record<string, string> = JSON.parse(saved.token_data);
+          let restored = 0;
+          for (const [fileName, fileData] of Object.entries(bundled)) {
+            const filePath = path.join(folderPath, fileName);
+            if (!fs.existsSync(filePath)) {
+              fs.writeFileSync(filePath, fileData, 'utf8');
+              restored++;
+            }
+          }
+          if (restored > 0) {
+            logger.info(`Restored ${restored} auth token(s) for '${accountId}' from Supabase`, accountId);
+          }
+        } else {
+          // Legacy single-file format
+          const filePath = path.join(folderPath, saved.file_name);
+          if (!fs.existsSync(filePath)) {
+            fs.writeFileSync(filePath, saved.token_data, 'utf8');
+            logger.info(`Restored auth token for '${accountId}' from Supabase`, accountId);
+          }
         }
       }
     } catch (err: any) {
@@ -48,21 +65,24 @@ export class TokenStorage {
   /**
    * Syncs all token files in a profile folder to Supabase.
    * Call this after a bot successfully authenticates.
+   * Stores ALL cache files as a single JSON blob (prismarine-auth needs msa + xbl + xsts + bed-cache).
    */
   public static async syncToSupabase(accountId: string, nodeId: string): Promise<void> {
     const folderPath = path.join(PROFILES_BASE, accountId);
     if (!fs.existsSync(folderPath)) return;
 
     try {
-      const files = fs.readdirSync(folderPath);
-      // Prefer bed-cache or xbl-cache files (prismarine-auth caches)
-      const cacheFile = files.find(f => f.endsWith('_bed-cache.json') || f.endsWith('_xbl-cache.json') || f.endsWith('.json'));
-      if (!cacheFile) return;
+      const files = fs.readdirSync(folderPath).filter(f => f.endsWith('.json'));
+      if (files.length === 0) return;
 
-      const filePath = path.join(folderPath, cacheFile);
-      const tokenData = fs.readFileSync(filePath, 'utf8');
-      await saveAuthToken(accountId, nodeId, cacheFile, tokenData);
-      logger.info(`Synced auth token for '${accountId}' to Supabase`, accountId);
+      // Bundle all JSON files into a single object: { "filename": "contents", ... }
+      const bundled: Record<string, string> = {};
+      for (const file of files) {
+        bundled[file] = fs.readFileSync(path.join(folderPath, file), 'utf8');
+      }
+
+      await saveAuthToken(accountId, nodeId, '__bundle__', JSON.stringify(bundled));
+      logger.info(`Synced ${files.length} auth token(s) for '${accountId}' to Supabase`, accountId);
     } catch (err: any) {
       logger.debug(`Token sync for '${accountId}': ${err?.message}`);
     }
@@ -108,6 +128,13 @@ export class TokenStorage {
    * Use ensureProfilesFolder for async init with Supabase sync.
    */
   public static getLocalProfilesFolder(accountId: string): string {
+    // If already an absolute path under PROFILES_BASE, use as-is (avoid doubling)
+    if (path.isAbsolute(accountId) && accountId.startsWith(PROFILES_BASE)) {
+      if (!fs.existsSync(accountId)) {
+        fs.mkdirSync(accountId, { recursive: true, mode: 0o700 });
+      }
+      return accountId;
+    }
     const folderPath = path.join(PROFILES_BASE, accountId);
     if (!fs.existsSync(folderPath)) {
       fs.mkdirSync(folderPath, { recursive: true, mode: 0o700 });

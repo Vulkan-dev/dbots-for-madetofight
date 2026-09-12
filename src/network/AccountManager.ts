@@ -88,6 +88,13 @@ export class AccountManager extends EventEmitter {
       TokenStorage.syncToSupabase(accountConfig.id, this.appConfig.nodeId).catch(() => {});
     });
 
+    // Also sync when bot fully connects (cached tokens may not trigger 'authenticated')
+    bot.on('stateChanged', (newState: string) => {
+      if (newState === 'CONNECTED') {
+        TokenStorage.syncToSupabase(accountConfig.id, this.appConfig.nodeId).catch(() => {});
+      }
+    });
+
     logger.info(`Registered account '${accountConfig.id}'`, accountConfig.id);
     this.emit('accountAdded', bot);
     return bot;

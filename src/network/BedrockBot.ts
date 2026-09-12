@@ -570,6 +570,8 @@ export class BedrockBot extends EventEmitter {
           return;
         }
 
+        this.emit('authenticated');
+
         const ident = this.authManager.getIdentity();
         if (ident.gamertag) {
           this.xboxUsername = ident.gamertag;
