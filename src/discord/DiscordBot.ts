@@ -752,7 +752,7 @@ export class DiscordBot {
         return;
       }
       const targetId = interaction.options.getString('bot', true).trim();
-      const removed = await this.manager.removeAccount(targetId);
+      const removed = await this.manager.forceRemoveAccount(targetId);
       if (removed) {
         await interaction.reply({
           content: `Permanently removed bot **${targetId}** and deleted its Discord channel and control embed.`,
@@ -947,7 +947,7 @@ export class DiscordBot {
         await message.reply(`Usage: \`${prefix}removebot <botId>\``);
         return;
       }
-      const removed = await this.manager.removeAccount(targetId);
+      const removed = await this.manager.forceRemoveAccount(targetId);
       if (removed) {
         await message.reply(`Permanently removed bot **${targetId}** and wiped all associated profile and cached data.`);
       } else {

@@ -36,6 +36,7 @@ export class AccountManager extends EventEmitter {
   private bots: Map<string, BedrockBot> = new Map();
   private statusSyncTimer: NodeJS.Timer | null = null;
   private commandPollTimer: NodeJS.Timer | null = null;
+  private addingAccounts: Set<string> = new Set();
 
   constructor(appConfig: AppConfig) {
     super();
@@ -107,25 +108,40 @@ export class AccountManager extends EventEmitter {
     const trimId = id.trim();
     const trimEmail = email.trim();
 
-    await upsertAccount({
-      id: trimId,
-      node_id: this.appConfig.nodeId,
-      email: trimEmail,
-      auto_connect: true,
-    });
+    // Prevent duplicate add operations for the same account
+    if (this.addingAccounts.has(trimId)) {
+      const existing = this.bots.get(trimId);
+      if (existing) return existing;
+    }
+    this.addingAccounts.add(trimId);
 
-    const accConfig: AccountConfig = {
-      id: trimId,
-      email: trimEmail,
-      nodeId: this.appConfig.nodeId,
-      autoConnect: true,
-      offline: false,
-      profilesFolder: '',
-    };
+    try {
+      // Double-check after acquiring lock
+      const existing = this.bots.get(trimId);
+      if (existing) return existing;
 
-    const bot = await this.instantiateBot(accConfig);
-    logger.info(`Added new account '${trimId}' (${trimEmail})`, trimId);
-    return bot;
+      await upsertAccount({
+        id: trimId,
+        node_id: this.appConfig.nodeId,
+        email: trimEmail,
+        auto_connect: true,
+      });
+
+      const accConfig: AccountConfig = {
+        id: trimId,
+        email: trimEmail,
+        nodeId: this.appConfig.nodeId,
+        autoConnect: true,
+        offline: false,
+        profilesFolder: '',
+      };
+
+      const bot = await this.instantiateBot(accConfig);
+      logger.info(`Added new account '${trimId}' (${trimEmail})`, trimId);
+      return bot;
+    } finally {
+      this.addingAccounts.delete(trimId);
+    }
   }
 
   /**
@@ -141,10 +157,34 @@ export class AccountManager extends EventEmitter {
     }
 
     await TokenStorage.clearTokens(accountId);
+
+    // Only update Supabase to prevent auto-connect — do NOT delete the row
+    // so other nodes (master/workers) keep their own bot instances intact.
+    await upsertAccount({ id: accountId, node_id: this.appConfig.nodeId, auto_connect: false });
+
+    this.emit('accountRemoved', accountId, bot?.xboxUsername);
+    logger.info(`Account '${accountId}' removed from this node (Supabase row preserved)`);
+    return true;
+  }
+
+  /**
+   * Permanently deletes an account from Supabase entirely (all nodes lose it).
+   * Used only by the master's /removebot Discord command.
+   */
+  public async forceRemoveAccount(accountId: string): Promise<boolean> {
+    const bot = this.bots.get(accountId);
+    this.joinScheduler.cancelJoin(accountId);
+
+    if (bot) {
+      try { await bot.dispose(); } catch {}
+      this.bots.delete(accountId);
+    }
+
+    await TokenStorage.clearTokens(accountId);
     await deleteAccount(accountId);
 
     this.emit('accountRemoved', accountId, bot?.xboxUsername);
-    logger.info(`Account '${accountId}' removed permanently`);
+    logger.info(`Account '${accountId}' permanently deleted from Supabase`);
     return true;
   }
 

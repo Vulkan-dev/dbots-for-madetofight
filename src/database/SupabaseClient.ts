@@ -32,6 +32,27 @@ export async function initSupabaseSchema(): Promise<void> {
     } else {
       logger.info('Supabase schema verified');
     }
+
+    // Ensure compound unique constraint exists on accounts(id, node_id)
+    // This allows the same account ID on different nodes without conflicts.
+    try {
+      const { error: constraintError } = await client.rpc('exec_sql', {
+        query: `DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'accounts_id_node_id_key'
+          ) THEN
+            ALTER TABLE accounts ADD CONSTRAINT accounts_id_node_id_key UNIQUE (id, node_id);
+          END IF;
+        END $$;`
+      });
+      if (constraintError) {
+        // RPC may not exist — log for manual migration
+        logger.debug('Could not auto-add compound unique constraint. Run this SQL manually in Supabase:');
+        logger.debug('ALTER TABLE accounts ADD CONSTRAINT accounts_id_node_id_key UNIQUE (id, node_id);');
+      }
+    } catch {
+      logger.debug('Auto-migration skipped. If accounts appear on wrong nodes, run: ALTER TABLE accounts ADD CONSTRAINT accounts_id_node_id_key UNIQUE (id, node_id);');
+    }
   } catch (err) {
     logger.error('Supabase schema check threw', undefined, err);
   }
@@ -107,13 +128,15 @@ export async function upsertAccount(account: {
   const { error } = await client.from('accounts').upsert({
     ...account,
     updated_at: new Date().toISOString(),
-  }, { onConflict: 'id' });
+  }, { onConflict: 'id,node_id' });
   if (error) logger.debug(`upsertAccount [${account.id}]: ${error.message}`);
 }
 
-export async function deleteAccount(id: string): Promise<void> {
+export async function deleteAccount(id: string, nodeId?: string): Promise<void> {
   const client = getSupabaseClient();
-  await client.from('accounts').delete().eq('id', id);
+  let query = client.from('accounts').delete().eq('id', id);
+  if (nodeId) query = query.eq('node_id', nodeId);
+  await query;
   await client.from('auth_tokens').delete().eq('account_id', id);
   await client.from('commands').delete().eq('account_id', id);
 }
