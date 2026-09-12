@@ -163,7 +163,8 @@ export class WebServer {
             if (!resolved) { resolved = true; clearTimeout(timeout); bot.authManager.removeListener('msaCode', onCode); resolve(data); }
           };
           bot.authManager.on('msaCode', onCode);
-          this.manager.scheduleAccountConnect(id);
+          // Connect directly — bypass JoinScheduler so link login isn't blocked by auto-connect queue
+          bot.connect().catch(() => {});
         });
 
         if (codeInfo) {
