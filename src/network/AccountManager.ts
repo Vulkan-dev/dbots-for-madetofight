@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import {
   getAccountsForNode,
   upsertAccount,
+  updateAccountFields,
   deleteAccount,
   getPendingCommands,
   markCommandDone,
@@ -160,7 +161,7 @@ export class AccountManager extends EventEmitter {
 
     // Only update Supabase to prevent auto-connect — do NOT delete the row
     // so other nodes (master/workers) keep their own bot instances intact.
-    await upsertAccount({ id: accountId, node_id: this.appConfig.nodeId, auto_connect: false });
+    await updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: false });
 
     this.emit('accountRemoved', accountId, bot?.xboxUsername);
     logger.info(`Account '${accountId}' removed from this node (Supabase row preserved)`);
@@ -213,8 +214,7 @@ export class AccountManager extends EventEmitter {
 
     // Transfer tokens to target node (don't delete them!)
     await TokenStorage.transferTokens(accountId, targetNodeId);
-    await upsertAccount({
-      id: accountId,
+    await updateAccountFields(accountId, {
       node_id: targetNodeId,
       auto_connect: true,
     });
@@ -231,7 +231,7 @@ export class AccountManager extends EventEmitter {
     await bot.disconnect();
     await TokenStorage.clearTokens(accountId);
     bot.clearAuthToken();
-    await upsertAccount({ id: accountId, node_id: this.appConfig.nodeId, auto_connect: false });
+    await updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: false });
     logger.info(`Account '${accountId}' signed out`, accountId);
     return true;
   }
@@ -261,7 +261,7 @@ export class AccountManager extends EventEmitter {
     const bot = this.bots.get(accountId);
     if (bot) {
       await bot.disconnect();
-      await upsertAccount({ id: accountId, node_id: this.appConfig.nodeId, auto_connect: false });
+      await updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: false });
     }
   }
 
@@ -286,8 +286,7 @@ export class AccountManager extends EventEmitter {
       try {
         const pos = bot.currentPosition;
         const authIdent = bot.authManager?.getIdentity?.() || null;
-        await upsertAccount({
-          id,
+        await updateAccountFields(id, {
           node_id: this.appConfig.nodeId,
           status: bot.getState(),
           ign: bot.inGameIgn || '',

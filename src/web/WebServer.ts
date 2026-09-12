@@ -8,7 +8,7 @@ import {
   getNodeSettings,
   insertCommand,
   getAllNodes,
-  upsertAccount,
+  updateAccountFields,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 
@@ -217,9 +217,7 @@ export class WebServer {
       const { accountId, email } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
       try {
-        await upsertAccount({
-          id: accountId,
-          node_id: this.config.nodeId,
+        await updateAccountFields(accountId, {
           email: (email || '').trim(),
         });
         res.json({ success: true });

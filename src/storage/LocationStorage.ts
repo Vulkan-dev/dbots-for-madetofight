@@ -1,5 +1,5 @@
 import { logger } from '../utils/logger';
-import { upsertAccount } from '../database/SupabaseClient';
+import { updateAccountFields } from '../database/SupabaseClient';
 
 // AFK spot is stored directly on the account row in Supabase.
 // This module provides the same interface as the old file-based LocationStorage.
@@ -16,9 +16,7 @@ export const LocationStorage = {
    */
   async setAfkSpot(accountId: string, nodeId: string, spot: AfkSpot | null): Promise<void> {
     try {
-      await upsertAccount({
-        id: accountId,
-        node_id: nodeId,
+      await updateAccountFields(accountId, {
         afk_spot: spot,
         afk_spot_active: spot !== null,
       });

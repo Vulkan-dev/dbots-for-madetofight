@@ -111,6 +111,15 @@ export async function upsertAccount(account: {
   if (error) logger.debug(`upsertAccount [${account.id}]: ${error.message}`);
 }
 
+export async function updateAccountFields(id: string, fields: Record<string, any>): Promise<void> {
+  const client = getSupabaseClient();
+  const { error } = await client.from('accounts').update({
+    ...fields,
+    updated_at: new Date().toISOString(),
+  }).eq('id', id);
+  if (error) logger.debug(`updateAccountFields [${id}]: ${error.message}`);
+}
+
 export async function deleteAccount(id: string, nodeId?: string): Promise<void> {
   const client = getSupabaseClient();
   let query = client.from('accounts').delete().eq('id', id);
