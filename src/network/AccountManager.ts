@@ -197,6 +197,32 @@ export class AccountManager extends EventEmitter {
     return this.scheduleAccountConnect(accountId);
   }
 
+  /**
+   * Moves an account to a different node.
+   * Stops the bot on this node, updates Supabase node_id, and cleans up local state.
+   * The target node will pick up the account on its next load cycle.
+   */
+  public async moveAccount(accountId: string, targetNodeId: string): Promise<boolean> {
+    const bot = this.bots.get(accountId);
+    this.joinScheduler.cancelJoin(accountId);
+
+    if (bot) {
+      try { await bot.dispose(); } catch {}
+      this.bots.delete(accountId);
+    }
+
+    await TokenStorage.clearTokens(accountId);
+    await upsertAccount({
+      id: accountId,
+      node_id: targetNodeId,
+      auto_connect: true,
+    });
+
+    this.emit('accountRemoved', accountId, bot?.xboxUsername);
+    logger.info(`Account '${accountId}' moved to node '${targetNodeId}'`, accountId);
+    return true;
+  }
+
   public async signOutAccount(accountId: string): Promise<boolean> {
     const bot = this.bots.get(accountId);
     if (!bot) return false;
@@ -365,6 +391,12 @@ export class AccountManager extends EventEmitter {
         }
         break;
 
+      case 'MOVE_ACCOUNT':
+        if (account_id && payload.targetNodeId) {
+          await this.moveAccount(account_id, payload.targetNodeId);
+        }
+        break;
+
       case 'REMOVE_ACCOUNT':
         if (account_id) await this.removeAccount(account_id);
         break;
@@ -431,6 +463,8 @@ export class AccountManager extends EventEmitter {
         case 'toggle_left_click':  res = ctrl.toggleLeftClick(state); break;
         case 'toggle_right_click': res = ctrl.toggleRightClick(state); break;
         case 'throw_pearl':        res = ctrl.throwPearl(); break;
+        case 'throw_item':         res = ctrl.throwItem(); break;
+        case 'throw_all':          res = ctrl.throwAll(); break;
         case 'toggle_spam_click':  res = ctrl.toggleSpamClick(state, options?.minDelay, options?.maxDelay); break;
         case 'look_up':    ctrl.look('up',    options?.degrees ?? 15); res = true; break;
         case 'look_down':  ctrl.look('down',  options?.degrees ?? 15); res = true; break;
@@ -443,6 +477,12 @@ export class AccountManager extends EventEmitter {
 
     if (action === 'throw_pearl' && results.every(r => r.state === false)) {
       return { success: false, error: 'No ender pearl found in hotbar (slots 1-9).', result: results };
+    }
+    if (action === 'throw_item' && results.every(r => r.state === false)) {
+      return { success: false, error: 'Hand is empty — nothing to throw.', result: results };
+    }
+    if (action === 'throw_all' && results.every(r => r.state === false)) {
+      return { success: false, error: 'Inventory is empty — nothing to throw.', result: results };
     }
     return { success: true, result: results };
   }

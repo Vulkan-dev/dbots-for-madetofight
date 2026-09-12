@@ -197,6 +197,19 @@ export class WebServer {
       }
     });
 
+    // ── Move account to another node ────────────────────────────────────────
+    this.app.post('/api/accounts/move', async (req, res) => {
+      const { accountId, targetNodeId } = req.body;
+      if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
+      if (!targetNodeId) { res.status(400).json({ success: false, error: 'targetNodeId required' }); return; }
+      try {
+        const ok = await this.manager.moveAccount(accountId, targetNodeId);
+        res.json({ success: ok });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
     // ── Connect ─────────────────────────────────────────────────────────────
     this.app.post('/api/accounts/connect', (req, res) => {
       const { accountId } = req.body;

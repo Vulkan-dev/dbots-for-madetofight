@@ -353,6 +353,114 @@ export class ActionController {
     }
   }
 
+  /**
+   * Throw the item currently held in hand
+   */
+  public throwItem(): boolean {
+    const client = this.getClient();
+    const runtimeId = this.getRuntimeEntityId();
+    const pos = this.getPosition();
+    if (!client || runtimeId == null) return false;
+
+    const heldItem = this.getHeldItem ? this.getHeldItem() : null;
+    const hotbarSlot = this.getHotbarSlot ? this.getHotbarSlot() : 0;
+
+    if (!ActionController.hasValidItem(heldItem)) {
+      logger.warn('Throw Item requested but hand is empty.', this.accountId);
+      return false;
+    }
+
+    const formattedItem = {
+      network_id: typeof heldItem?.network_id === 'number' ? heldItem.network_id : (typeof heldItem?.id === 'number' ? heldItem.id : 0),
+      count: heldItem?.count || 1,
+      metadata: heldItem?.metadata || 0,
+      has_stack_id: heldItem?.has_stack_id ? 1 : 0,
+      block_runtime_id: heldItem?.block_runtime_id || 0,
+      extra: heldItem?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
+    };
+
+    try {
+      client.queue('inventory_transaction', {
+        transaction: {
+          legacy: { legacy_request_id: 0, legacy_set_item_slots: [] },
+          transaction_type: 'item_release',
+          actions: [],
+          transaction_data: {
+            action_type: 'drop_item',
+            hotbar_slot: hotbarSlot,
+            held_item: formattedItem,
+            player_pos: pos,
+            click_pos: { x: 0, y: 0, z: 0 },
+          },
+        },
+      });
+      logger.info(`Threw item from hotbar slot ${hotbarSlot} (network_id: ${formattedItem.network_id}).`, this.accountId);
+      return true;
+    } catch (err) {
+      logger.debug('Failed to send throw item packet', this.accountId);
+      return false;
+    }
+  }
+
+  /**
+   * Throw entire inventory — all hotbar, main inventory, armor, and offhand slots.
+   * Drops items with small delays between each to avoid packet flood.
+   */
+  public throwAll(): boolean {
+    const client = this.getClient();
+    const runtimeId = this.getRuntimeEntityId();
+    const pos = this.getPosition();
+    if (!client || runtimeId == null) return false;
+
+    const inv = this.getInventory ? this.getInventory() : null;
+    if (!Array.isArray(inv) || inv.length === 0) {
+      logger.warn('Throw All requested but inventory is empty.', this.accountId);
+      return false;
+    }
+
+    let droppedCount = 0;
+
+    for (let slot = 0; slot < inv.length; slot++) {
+      const item = inv[slot];
+      if (!ActionController.hasValidItem(item)) continue;
+
+      const formattedItem = {
+        network_id: typeof item?.network_id === 'number' ? item.network_id : (typeof item?.id === 'number' ? item.id : 0),
+        count: item?.count || 1,
+        metadata: item?.metadata || 0,
+        has_stack_id: item?.has_stack_id ? 1 : 0,
+        block_runtime_id: item?.block_runtime_id || 0,
+        extra: item?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
+      };
+
+      // Slot mapping: 0-8 hotbar, switch to each slot before dropping
+      const hotbarSlot = slot < 9 ? slot : 0;
+
+      try {
+        client.queue('inventory_transaction', {
+          transaction: {
+            legacy: { legacy_request_id: 0, legacy_set_item_slots: [] },
+            transaction_type: 'item_release',
+            actions: [],
+            transaction_data: {
+              action_type: 'drop_item',
+              hotbar_slot: hotbarSlot,
+              held_item: formattedItem,
+              player_pos: pos,
+              click_pos: { x: 0, y: 0, z: 0 },
+            },
+          },
+        });
+        droppedCount++;
+      } catch (err) {
+        logger.debug(`Failed to drop item in slot ${slot}`, this.accountId);
+      }
+    }
+
+    logger.info(`Throw All: dropped ${droppedCount} item stack(s) from inventory.`, this.accountId);
+    return droppedCount > 0;
+  }
+
   public moveForward(distanceBlocks: number): void {
     const engine = this.getKeepAliveEngine();
     if (!engine) {
