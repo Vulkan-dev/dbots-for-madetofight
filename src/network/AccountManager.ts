@@ -5,13 +5,16 @@ import { ActionStates } from '../features/ActionController';
 import { JoinScheduler } from './JoinScheduler';
 import { TokenStorage } from '../auth/TokenStorage';
 import { logger } from '../utils/logger';
+import { NotificationService } from '../notify/NotificationService';
 import {
   getAccountsForNode,
+  getAccountById,
   upsertAccount,
   updateAccountFields,
   deleteAccount,
   getPendingCommands,
   markCommandDone,
+  insertCommand,
 } from '../database/SupabaseClient';
 
 export interface AccountStatusSummary {
@@ -33,6 +36,7 @@ export interface AccountStatusSummary {
 
 export class AccountManager extends EventEmitter {
   private appConfig: AppConfig;
+  private notificationService: NotificationService;
   private joinScheduler: JoinScheduler;
   private bots: Map<string, BedrockBot> = new Map();
   private statusSyncTimer: NodeJS.Timer | null = null;
@@ -42,6 +46,7 @@ export class AccountManager extends EventEmitter {
   constructor(appConfig: AppConfig) {
     super();
     this.appConfig = appConfig;
+    this.notificationService = new NotificationService((appConfig as any).notification?.endpoint || '');
     this.joinScheduler = new JoinScheduler(
       appConfig.joinScheduler.minDelayMs,
       appConfig.joinScheduler.maxDelayMs
@@ -82,7 +87,7 @@ export class AccountManager extends EventEmitter {
     const profilesFolder = await TokenStorage.ensureProfilesFolder(accountConfig.id);
     accountConfig.profilesFolder = profilesFolder;
 
-    const bot = new BedrockBot(accountConfig, this.appConfig, null as any);
+    const bot = new BedrockBot(accountConfig, this.appConfig, this.notificationService);
     this.bots.set(accountConfig.id, bot);
 
     // After any successful auth, sync new token to Supabase
@@ -117,6 +122,12 @@ export class AccountManager extends EventEmitter {
     this.addingAccounts.add(trimId);
 
     try {
+      // Check if account identifier already exists on ANY node in Supabase
+      const existingRow = await getAccountById(trimId);
+      if (existingRow && existingRow.node_id !== this.appConfig.nodeId) {
+        throw new Error(`Account Identifier '#${trimId}' is already in use by node '${existingRow.node_id}'. Please use a unique identifier.`);
+      }
+
       // Double-check after acquiring lock
       const existing = this.bots.get(trimId);
       if (existing) return existing;
@@ -200,8 +211,7 @@ export class AccountManager extends EventEmitter {
 
   /**
    * Moves an account to a different node.
-   * Stops the bot on this node, updates Supabase node_id, and cleans up local state.
-   * The target node will pick up the account on its next load cycle.
+   * Stops the bot on this node, updates Supabase node_id, and notifies target node.
    */
   public async moveAccount(accountId: string, targetNodeId: string): Promise<boolean> {
     const bot = this.bots.get(accountId);
@@ -212,12 +222,20 @@ export class AccountManager extends EventEmitter {
       this.bots.delete(accountId);
     }
 
-    // Transfer tokens to target node (don't delete them!)
+    // Transfer tokens to target node
     await TokenStorage.transferTokens(accountId, targetNodeId);
     await updateAccountFields(accountId, {
       node_id: targetNodeId,
       auto_connect: true,
+      status: 'CONNECTING',
     });
+
+    // Notify target node immediately via command bus
+    try {
+      await insertCommand(targetNodeId, accountId, 'LOAD_AND_CONNECT', { accountId });
+    } catch (err: any) {
+      logger.debug(`Could not send LOAD_AND_CONNECT command to ${targetNodeId}: ${err?.message}`);
+    }
 
     this.emit('accountRemoved', accountId, bot?.xboxUsername);
     logger.info(`Account '${accountId}' moved to node '${targetNodeId}'`, accountId);
@@ -282,6 +300,41 @@ export class AccountManager extends EventEmitter {
   }
 
   private async pushStatus(): Promise<void> {
+    // 1. Reconcile accounts: auto-load any account moved/assigned to this node, unload any moved away
+    try {
+      const assignedRows = await getAccountsForNode(this.appConfig.nodeId);
+      const assignedIds = new Set(assignedRows.map(r => r.id));
+
+      for (const row of assignedRows) {
+        if (!this.bots.has(row.id)) {
+          logger.info(`Auto-loading newly assigned account '${row.id}' for node '${this.appConfig.nodeId}'`, row.id);
+          await this.instantiateBot({
+            id: row.id,
+            email: row.email || '',
+            nodeId: this.appConfig.nodeId,
+            autoConnect: row.auto_connect ?? true,
+            offline: row.offline_mode ?? false,
+            profilesFolder: '',
+          });
+          if (row.auto_connect !== false) {
+            this.scheduleAccountConnect(row.id);
+          }
+        }
+      }
+
+      for (const [id, bot] of this.bots.entries()) {
+        if (!assignedIds.has(id)) {
+          logger.info(`Account '${id}' no longer assigned to node '${this.appConfig.nodeId}'. Unloading...`, id);
+          this.joinScheduler.cancelJoin(id);
+          try { await bot.dispose(); } catch {}
+          this.bots.delete(id);
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Account reconciliation: ${err?.message}`);
+    }
+
+    // 2. Push telemetry for all active bots
     for (const [id, bot] of this.bots.entries()) {
       try {
         const pos = bot.currentPosition;
@@ -343,8 +396,14 @@ export class AccountManager extends EventEmitter {
     logger.info(`Executing command: ${action}${account_id ? ` [${account_id}]` : ''}`);
 
     switch (action) {
+      case 'LOAD_AND_CONNECT':
       case 'CONNECT':
-        if (account_id) this.scheduleAccountConnect(account_id);
+        if (account_id) {
+          if (!this.bots.has(account_id)) {
+            await this.loadAccountsFromSupabase();
+          }
+          this.scheduleAccountConnect(account_id);
+        }
         break;
 
       case 'DISCONNECT':

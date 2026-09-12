@@ -94,6 +94,13 @@ export async function getAllAccounts(): Promise<any[]> {
   return data || [];
 }
 
+export async function getAccountById(id: string): Promise<any | null> {
+  const client = getSupabaseClient();
+  const { data, error } = await client.from('accounts').select('*').eq('id', id).maybeSingle();
+  if (error) logger.debug(`getAccountById [${id}]: ${error.message}`);
+  return data || null;
+}
+
 export async function upsertAccount(account: {
   id: string; node_id: string; email?: string; status?: string;
   ign?: string; gamertag?: string; health?: number;
@@ -104,10 +111,14 @@ export async function upsertAccount(account: {
   auto_connect?: boolean; offline_mode?: boolean;
 }): Promise<void> {
   const client = getSupabaseClient();
-  const { error } = await client.from('accounts').upsert({
+  const cleanAccount: Record<string, any> = {
     ...account,
     updated_at: new Date().toISOString(),
-  }, { onConflict: 'id' });
+  };
+  // Remove explicitly undefined values so they don't overwrite existing columns with defaults
+  Object.keys(cleanAccount).forEach(k => cleanAccount[k] === undefined && delete cleanAccount[k]);
+
+  const { error } = await client.from('accounts').upsert(cleanAccount, { onConflict: 'id' });
   if (error) logger.debug(`upsertAccount [${account.id}]: ${error.message}`);
 }
 

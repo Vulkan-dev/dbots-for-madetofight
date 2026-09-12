@@ -9,6 +9,7 @@ import {
   insertCommand,
   getAllNodes,
   updateAccountFields,
+  getAccountById,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 
@@ -109,11 +110,20 @@ export class WebServer {
       if (!email || typeof email !== 'string') {
         res.status(400).json({ success: false, error: 'Email is required' }); return;
       }
-      if (this.manager.getBot(id)) {
-        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` }); return;
+      const trimId = id.trim();
+      const existing = await getAccountById(trimId);
+      if (existing && existing.node_id !== this.config.nodeId) {
+        res.status(400).json({
+          success: false,
+          error: `Account Identifier '#${trimId}' is already in use by node '${existing.node_id}'. Please use a unique identifier.`
+        });
+        return;
+      }
+      if (this.manager.getBot(trimId)) {
+        res.status(400).json({ success: false, error: `Account '#${trimId}' already exists on this node` }); return;
       }
       try {
-        const bot = await this.manager.addAccount(id, email);
+        const bot = await this.manager.addAccount(trimId, email.trim());
 
         const codeInfo = await new Promise<any>((resolve) => {
           let resolved = false;
@@ -124,13 +134,13 @@ export class WebServer {
             if (!resolved) { resolved = true; clearTimeout(timeout); bot.authManager.removeListener('msaCode', onCode); resolve(data); }
           };
           bot.authManager.on('msaCode', onCode);
-          this.manager.scheduleAccountConnect(id);
+          this.manager.scheduleAccountConnect(trimId);
         });
 
-        logger.info(`API: Added account '${id}'`);
+        logger.info(`API: Added account '${trimId}'`);
         res.json({
           success: true,
-          accountId: id,
+          accountId: trimId,
           codeInfo: codeInfo ? {
             user_code: codeInfo.user_code,
             verification_uri: codeInfo.verification_uri,
@@ -138,7 +148,7 @@ export class WebServer {
           } : null,
         });
       } catch (err: any) {
-        logger.error(`API: Failed to add account '${id}': ${err.message}`);
+        logger.error(`API: Failed to add account '${trimId}': ${err.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });
@@ -149,12 +159,21 @@ export class WebServer {
       if (!id || typeof id !== 'string') {
         res.status(400).json({ success: false, error: 'Account ID is required' }); return;
       }
-      if (this.manager.getBot(id)) {
-        res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` }); return;
+      const trimId = id.trim();
+      const existing = await getAccountById(trimId);
+      if (existing && existing.node_id !== this.config.nodeId) {
+        res.status(400).json({
+          success: false,
+          error: `Account Identifier '#${trimId}' is already in use by node '${existing.node_id}'. Please use a unique identifier.`
+        });
+        return;
+      }
+      if (this.manager.getBot(trimId)) {
+        res.status(400).json({ success: false, error: `Account '#${trimId}' already exists on this node` }); return;
       }
       try {
-        const emailValue = (email || '').trim() || `${id}@link.local`;
-        const bot = await this.manager.addAccount(id, emailValue);
+        const emailValue = (email || '').trim() || `${trimId}@link.local`;
+        const bot = await this.manager.addAccount(trimId, emailValue);
 
         const codeInfo = await new Promise<any>((resolve) => {
           let resolved = false;
@@ -170,11 +189,11 @@ export class WebServer {
         });
 
         if (codeInfo) {
-          logger.info(`API: Link login started for '${id}' — code: ${codeInfo.user_code}`);
+          logger.info(`API: Link login started for '${trimId}' — code: ${codeInfo.user_code}`);
         }
         res.json({
           success: true,
-          accountId: id,
+          accountId: trimId,
           codeInfo: codeInfo ? {
             user_code: codeInfo.user_code,
             verification_uri: codeInfo.verification_uri,
@@ -182,7 +201,7 @@ export class WebServer {
           } : null,
         });
       } catch (err: any) {
-        logger.error(`API: Failed link login for '${id}': ${err.message}`);
+        logger.error(`API: Failed link login for '${trimId}': ${err.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });
@@ -205,8 +224,22 @@ export class WebServer {
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
       if (!targetNodeId) { res.status(400).json({ success: false, error: 'targetNodeId required' }); return; }
       try {
-        const ok = await this.manager.moveAccount(accountId, targetNodeId);
-        res.json({ success: ok });
+        const bot = this.manager.getBot(accountId);
+        if (bot) {
+          const ok = await this.manager.moveAccount(accountId, targetNodeId);
+          res.json({ success: ok });
+        } else {
+          // If bot is hosted on another node, update Supabase transfer and signal target node
+          const { TokenStorage } = require('../auth/TokenStorage');
+          await TokenStorage.transferTokens(accountId, targetNodeId);
+          await updateAccountFields(accountId, {
+            node_id: targetNodeId,
+            auto_connect: true,
+            status: 'CONNECTING',
+          });
+          await insertCommand(targetNodeId, accountId, 'LOAD_AND_CONNECT', { accountId });
+          res.json({ success: true });
+        }
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }

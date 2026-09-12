@@ -63,13 +63,15 @@ export class ContainerMonitor {
       return;
     }
 
-    this.notificationService.notifyContainerActivity({
-      player,
-      type: containerType,
-      position,
-      playerPos,
-      accountId: this.accountId,
-    });
+    if (this.notificationService) {
+      this.notificationService.notifyContainerActivity({
+        player,
+        type: containerType,
+        position,
+        playerPos,
+        accountId: this.accountId,
+      });
+    }
   }
 
   public cleanupDebounceCache(): void {

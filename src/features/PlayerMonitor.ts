@@ -100,12 +100,14 @@ export class PlayerMonitor {
         return;
       }
 
-      this.notificationService.notifyPlayerDetected({
-        name: player.username,
-        position,
-        distance,
-        accountId: this.accountId,
-      });
+      if (this.notificationService) {
+        this.notificationService.notifyPlayerDetected({
+          name: player.username,
+          position,
+          distance,
+          accountId: this.accountId,
+        });
+      }
     } else {
       existing.position.x = position.x;
       existing.position.y = position.y;
