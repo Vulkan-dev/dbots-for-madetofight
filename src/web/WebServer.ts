@@ -8,6 +8,7 @@ import {
   getNodeSettings,
   insertCommand,
   getAllNodes,
+  upsertAccount,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 
@@ -144,7 +145,7 @@ export class WebServer {
 
     // ── Quick link login ────────────────────────────────────────────────────
     this.app.post('/api/accounts/link', async (req, res) => {
-      const { id } = req.body;
+      const { id, email } = req.body;
       if (!id || typeof id !== 'string') {
         res.status(400).json({ success: false, error: 'Account ID is required' }); return;
       }
@@ -152,7 +153,8 @@ export class WebServer {
         res.status(400).json({ success: false, error: `Account '${id}' already exists on this node` }); return;
       }
       try {
-        const bot = await this.manager.addAccount(id, `${id}@link.local`);
+        const emailValue = (email || '').trim() || `${id}@link.local`;
+        const bot = await this.manager.addAccount(id, emailValue);
 
         const codeInfo = await new Promise<any>((resolve) => {
           let resolved = false;
@@ -205,6 +207,22 @@ export class WebServer {
       try {
         const ok = await this.manager.moveAccount(accountId, targetNodeId);
         res.json({ success: ok });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Update account email ────────────────────────────────────────────────
+    this.app.post('/api/accounts/update-email', async (req, res) => {
+      const { accountId, email } = req.body;
+      if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
+      try {
+        await upsertAccount({
+          id: accountId,
+          node_id: this.config.nodeId,
+          email: (email || '').trim(),
+        });
+        res.json({ success: true });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }

@@ -211,7 +211,8 @@ export class AccountManager extends EventEmitter {
       this.bots.delete(accountId);
     }
 
-    await TokenStorage.clearTokens(accountId);
+    // Transfer tokens to target node (don't delete them!)
+    await TokenStorage.transferTokens(accountId, targetNodeId);
     await upsertAccount({
       id: accountId,
       node_id: targetNodeId,

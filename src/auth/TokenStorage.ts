@@ -6,6 +6,7 @@ import {
   saveAuthToken,
   loadAuthToken,
   deleteAuthToken,
+  transferAuthToken,
 } from '../database/SupabaseClient';
 
 // ─── Temp directory for prismarine-auth cache files ───────────────────────────
@@ -119,6 +120,27 @@ export class TokenStorage {
       try {
         fs.rmSync(folderPath, { recursive: true, force: true });
         logger.info(`Cleared cached auth tokens for '${accountId}'`, accountId);
+      } catch {}
+    }
+  }
+
+  /**
+   * Transfers tokens to a new node — updates node_id in Supabase but KEEPS the tokens.
+   * Only removes local temp files (they belong to this node's ephemeral filesystem).
+   */
+  public static async transferTokens(accountId: string, newNodeId: string): Promise<void> {
+    try {
+      await transferAuthToken(accountId, newNodeId);
+      logger.info(`Transferred auth tokens for '${accountId}' to node '${newNodeId}'`, accountId);
+    } catch (err: any) {
+      logger.debug(`Token transfer for '${accountId}': ${err?.message}`);
+    }
+
+    // Remove local temp files (target node will download from Supabase)
+    const folderPath = path.join(PROFILES_BASE, accountId);
+    if (fs.existsSync(folderPath)) {
+      try {
+        fs.rmSync(folderPath, { recursive: true, force: true });
       } catch {}
     }
   }

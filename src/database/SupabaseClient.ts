@@ -165,6 +165,15 @@ export async function deleteAuthToken(accountId: string): Promise<void> {
   await client.from('auth_tokens').delete().eq('account_id', accountId);
 }
 
+export async function transferAuthToken(accountId: string, newNodeId: string): Promise<void> {
+  const client = getSupabaseClient();
+  const { error } = await client.from('auth_tokens').update({
+    node_id: newNodeId,
+    updated_at: new Date().toISOString(),
+  }).eq('account_id', accountId);
+  if (error) logger.debug(`transferAuthToken [${accountId}]: ${error.message}`);
+}
+
 // ─── Commands ───────────────────────────────────────────────────────────────────
 export async function getPendingCommands(nodeId: string): Promise<any[]> {
   const client = getSupabaseClient();
