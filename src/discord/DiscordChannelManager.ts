@@ -11,6 +11,17 @@ import { BedrockBot } from '../network/BedrockBot';
 import { PermissionStorage } from '../storage/PermissionStorage';
 import { logger } from '../utils/logger';
 
+export type BotOrData = BedrockBot | {
+  accountId?: string;
+  id?: string;
+  xboxUsername?: string;
+  gamertag?: string;
+  inGameIgn?: string;
+  ign?: string;
+  nodeId?: string;
+  node_id?: string;
+};
+
 export class DiscordChannelManager {
   private client: Client;
   private categoryId: string;
@@ -22,23 +33,29 @@ export class DiscordChannelManager {
     this.allowedUserId = allowedUserId;
   }
 
-  public getChannelNameForBot(bot: BedrockBot): string {
-    const raw = bot.xboxUsername || `bot-${bot.accountId}`;
+  public getChannelNameForBot(bot: BotOrData): string {
+    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
+    const raw = (bot as any).xboxUsername || (bot as any).gamertag || `bot-${accountId}`;
     let sanitized = raw.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    if (!sanitized) sanitized = `bot-${bot.accountId}`;
+    if (!sanitized) sanitized = `bot-${accountId}`;
     return sanitized;
   }
 
-  public async getOrCreateBotChannel(bot: BedrockBot): Promise<TextChannel | null> {
-    if (!this.categoryId) {
-      logger.debug('DISCORD_BOT_CATEGORY_ID is not configured. Skipping Discord bot channel management.');
+  public async getOrCreateBotChannel(bot: BotOrData, customCategoryId?: string): Promise<TextChannel | null> {
+    const effectiveCategoryId = customCategoryId || this.categoryId;
+    if (!effectiveCategoryId) {
+      logger.debug('No Discord category ID configured. Skipping Discord bot channel management.');
       return null;
     }
 
+    const accountId = (bot as any).accountId || (bot as any).id || 'unknown';
+    const xboxUsername = (bot as any).xboxUsername || (bot as any).gamertag || '';
+    const nodeId = (bot as any).nodeId || (bot as any).node_id || '';
+
     try {
-      const category = await this.client.channels.fetch(this.categoryId);
+      const category = await this.client.channels.fetch(effectiveCategoryId).catch(() => null);
       if (!category || category.type !== ChannelType.GuildCategory) {
-        logger.warn(`Configured category ID '${this.categoryId}' is not a valid Category channel.`);
+        logger.warn(`Configured category ID '${effectiveCategoryId}' is not a valid Category channel.`);
         return null;
       }
 
@@ -52,20 +69,24 @@ export class DiscordChannelManager {
       const existingChannel = guild.channels.cache.find(
         (ch) =>
           ch &&
-          ch.parentId === this.categoryId &&
           ch.type === ChannelType.GuildText &&
-          (((ch as TextChannel).topic && (ch as TextChannel).topic?.includes(`[${bot.accountId}]`)) ||
+          (ch.parentId === effectiveCategoryId || (((ch as TextChannel).topic && (ch as TextChannel).topic?.includes(`[${accountId}]`)))) &&
+          (((ch as TextChannel).topic && (ch as TextChannel).topic?.includes(`[${accountId}]`)) ||
             ch.name === expectedChannelName ||
-            ch.name === `bot-${bot.accountId.toLowerCase()}` ||
-            ch.name === bot.accountId.toLowerCase() ||
-            (bot.xboxUsername && ch.name === bot.xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')) ||
-            (bot.xboxUsername && ch.name === `bot-${bot.xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')}`))
+            ch.name === `bot-${accountId.toLowerCase()}` ||
+            ch.name === accountId.toLowerCase() ||
+            (xboxUsername && ch.name === xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')) ||
+            (xboxUsername && ch.name === `bot-${xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')}`))
       );
 
       if (existingChannel && existingChannel.isTextBased()) {
-        logger.info(`Found existing Discord channel #${existingChannel.name} for bot [${bot.accountId}]`, bot.accountId);
+        logger.info(`Found existing Discord channel #${existingChannel.name} for bot [${accountId}] (Category: ${effectiveCategoryId})`, accountId);
+        // If channel is under a different category, move it to the target category
+        if (existingChannel.parentId !== effectiveCategoryId && typeof (existingChannel as any).setParent === 'function') {
+          await (existingChannel as any).setParent(effectiveCategoryId).catch(() => {});
+        }
         // If GamerTag is now known and channel name differs, rename channel to GamerTag
-        if (bot.xboxUsername && existingChannel.name !== expectedChannelName) {
+        if (xboxUsername && existingChannel.name !== expectedChannelName) {
           existingChannel.setName(expectedChannelName).catch((e) => {
             logger.debug(`Could not rename channel #${existingChannel.name} to ${expectedChannelName}: ${e?.message || e}`);
           });
@@ -118,15 +139,15 @@ export class DiscordChannelManager {
       const newChannel = await guild.channels.create({
         name: expectedChannelName,
         type: ChannelType.GuildText,
-        parent: this.categoryId,
+        parent: effectiveCategoryId,
         permissionOverwrites,
-        topic: `Private control channel for DonutSMP Bedrock bot [${bot.accountId}]`,
+        topic: `Private control channel for DonutSMP Bedrock bot [${accountId}] (Node: ${nodeId || 'Master'})`,
       });
 
-      logger.info(`Created private Discord channel #${newChannel.name} for bot [${bot.accountId}]`, bot.accountId);
+      logger.info(`Created private Discord channel #${newChannel.name} in category [${effectiveCategoryId}] for bot [${accountId}]`, accountId);
       return newChannel;
     } catch (err) {
-      logger.error(`Failed to get or create Discord channel for bot [${bot.accountId}]`, bot.accountId, err);
+      logger.error(`Failed to get or create Discord channel for bot [${accountId}]`, accountId, err);
       return null;
     }
   }

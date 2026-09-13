@@ -19,6 +19,11 @@ export class WebServer {
   private manager: AccountManager;
   private config: AppConfig;
   private port: number;
+  private discordBot: any = null;
+
+  public setDiscordBot(bot: any): void {
+    this.discordBot = bot;
+  }
 
   constructor(manager: AccountManager, config: AppConfig) {
     this.app = express();
@@ -510,6 +515,20 @@ export class WebServer {
         const nodeId = targetNodeId || this.config.nodeId;
         await insertCommand(nodeId, accountId || null, action, payload || {});
         res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Internal Discord Category Registration ──────────────────────────────
+    this.app.post('/api/internal/register-node-category', async (req, res) => {
+      try {
+        const { nodeId, categoryId } = req.body;
+        if (nodeId && categoryId && this.discordBot) {
+          await this.discordBot.registerNodeCategory(nodeId, categoryId);
+          return res.json({ success: true });
+        }
+        res.status(400).json({ success: false, error: 'Missing nodeId/categoryId or Discord bot not running' });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }

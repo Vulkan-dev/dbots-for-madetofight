@@ -8,6 +8,7 @@ import {
 import fs from 'fs';
 import path from 'path';
 import { BedrockBot, ConnectionState } from '../network/BedrockBot';
+import { BotOrData } from './DiscordChannelManager';
 import { logger } from '../utils/logger';
 
 interface StoredMessageData {
@@ -54,15 +55,18 @@ export class DiscordControlEmbed {
     }
   }
 
-  public static buildControlEmbed(bot: BedrockBot): EmbedBuilder {
+  public static buildControlEmbed(bot: BedrockBot | BotOrData): EmbedBuilder {
     const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
-    const gamerTag = bot.xboxUsername || bot.accountId;
-    const ign = bot.inGameIgn || `${floodgatePrefix}${gamerTag}`;
-    const isOnline = bot.getState() === ConnectionState.CONNECTED;
-    let statusText = isOnline ? 'Online' : 'Offline';
+    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
+    const gamerTag = (bot as any).xboxUsername || (bot as any).gamertag || accountId;
+    const ign = (bot as any).inGameIgn || (bot as any).ign || `${floodgatePrefix}${gamerTag}`;
+    const isOnline = typeof (bot as any).getState === 'function'
+      ? (bot as any).getState() === ConnectionState.CONNECTED
+      : ((bot as any).status === 'CONNECTED' || (bot as any).state === 'CONNECTED' || (bot as any).status === 'online');
+    let statusText = isOnline ? 'Online' : ((bot as any).status || (bot as any).state || 'Offline');
 
-    const authIdent = bot.authManager ? bot.authManager.getIdentity() : null;
-    const authStatus = bot.authManager ? bot.authManager.getStatus() : null;
+    const authIdent = (bot as any).authManager?.getIdentity ? (bot as any).authManager.getIdentity() : null;
+    const authStatus = (bot as any).authManager?.getStatus ? (bot as any).authManager.getStatus() : ((bot as any).auth_status || (bot as any).authStatus);
 
     if (authStatus === 'XBOX_PROFILE_REQUIRED') {
       statusText = 'Xbox Profile Required';
@@ -72,29 +76,38 @@ export class DiscordControlEmbed {
       statusText = 'Authenticating...';
     } else if (authStatus === 'CHECKING_XBOX_PROFILE') {
       statusText = 'Checking Xbox Profile...';
-    } else if (bot.getState() === ConnectionState.CONNECTING) {
+    } else if (typeof (bot as any).getState === 'function' && (bot as any).getState() === ConnectionState.CONNECTING) {
       statusText = 'Connecting...';
-    } else if (bot.getState() === ConnectionState.RECONNECTING) {
+    } else if (typeof (bot as any).getState === 'function' && (bot as any).getState() === ConnectionState.RECONNECTING) {
       statusText = 'Reconnecting...';
     }
 
-    const pos = bot.currentPosition;
+    const pos = (bot as any).currentPosition || {
+      x: (bot as any).pos_x ?? 0,
+      y: (bot as any).pos_y ?? 0,
+      z: (bot as any).pos_z ?? 0,
+    };
     const locationText = `${Math.round(pos.x)}-${Math.round(pos.y)}-${Math.round(pos.z)}`;
+    const nodeId = (bot as any).node_id || (bot as any).nodeId || 'Master';
 
     let desc =
       `GamerTag: ${gamerTag}\n` +
       `IGN: ${ign}\n` +
       `Status: ${statusText}\n` +
-      `Location: ${locationText}`;
+      `Location: ${locationText}\n` +
+      `Node: ${nodeId}`;
 
     if (authIdent?.xuid) {
       desc += `\nXUID: ${authIdent.xuid}`;
     }
 
+    const msaCode = (bot as any).msaCodeData?.user_code || (bot as any).msa_code;
+    const msaUrl = (bot as any).msaCodeData?.verification_uri || (bot as any).msa_url || 'https://microsoft.com/link';
+
     if (authStatus === 'XBOX_PROFILE_REQUIRED') {
       desc += `\n⚠️ **Xbox Profile Required**: Please visit https://account.xbox.com/profile to set up your Gamertag, then click **Retry Profile Check**.`;
-    } else if (authStatus === 'VERIFICATION_REQUIRED' && bot.msaCodeData) {
-      desc += `\n🔑 **Auth Code**: Enter \`${bot.msaCodeData.user_code}\` at ${bot.msaCodeData.verification_uri}`;
+    } else if (authStatus === 'VERIFICATION_REQUIRED' && msaCode) {
+      desc += `\n🔑 **Auth Code**: Enter \`${msaCode}\` at ${msaUrl}`;
     }
 
     const publicUrl =
@@ -115,67 +128,72 @@ export class DiscordControlEmbed {
       .setDescription(desc);
   }
 
-  public static buildControlButtons(bot: BedrockBot): ActionRowBuilder<ButtonBuilder>[] {
-    const isOnline = bot.getState() === ConnectionState.CONNECTED;
-    const isAfkActive = bot.afkSpotTracker ? bot.afkSpotTracker.isActive() : false;
-    const authStatus = bot.authManager ? bot.authManager.getStatus() : null;
+  public static buildControlButtons(bot: BedrockBot | BotOrData): ActionRowBuilder<ButtonBuilder>[] {
+    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
+    const isOnline = typeof (bot as any).getState === 'function'
+      ? (bot as any).getState() === ConnectionState.CONNECTED
+      : ((bot as any).status === 'CONNECTED' || (bot as any).state === 'CONNECTED' || (bot as any).status === 'online');
+    const isAfkActive = (bot as any).afkSpotTracker?.isActive
+      ? (bot as any).afkSpotTracker.isActive()
+      : Boolean((bot as any).afk_spot_active || (bot as any).isAfkSpotActive);
+    const authStatus = (bot as any).authManager?.getStatus ? (bot as any).authManager.getStatus() : ((bot as any).auth_status || (bot as any).authStatus);
 
     const tpacceptBtn = new ButtonBuilder()
-      .setCustomId(`btn_tpaccept_${bot.accountId}`)
+      .setCustomId(`btn_tpaccept_${accountId}`)
       .setLabel('Tpaccept')
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!isOnline);
 
     const joinBtn = new ButtonBuilder()
-      .setCustomId(`btn_join_${bot.accountId}`)
+      .setCustomId(`btn_join_${accountId}`)
       .setLabel('Join')
       .setStyle(ButtonStyle.Success)
       .setDisabled(isOnline);
 
     const leaveBtn = new ButtonBuilder()
-      .setCustomId(`btn_leave_${bot.accountId}`)
+      .setCustomId(`btn_leave_${accountId}`)
       .setLabel('Leave')
       .setStyle(ButtonStyle.Danger)
       .setDisabled(!isOnline);
 
     const setAfkBtn = new ButtonBuilder()
-      .setCustomId(`btn_setafk_${bot.accountId}`)
+      .setCustomId(`btn_setafk_${accountId}`)
       .setLabel(isAfkActive ? 'Set Afk (Active)' : 'Set Afk')
       .setStyle(isAfkActive ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(!isOnline);
 
     const unafkBtn = new ButtonBuilder()
-      .setCustomId(`btn_unafk_${bot.accountId}`)
+      .setCustomId(`btn_unafk_${accountId}`)
       .setLabel('UnAFK')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!isOnline || !isAfkActive);
-
-    const isCrouching = bot.actionController ? bot.actionController.isCrouching : false;
+      .setDisabled(!isAfkActive);
 
     const crouchBtn = new ButtonBuilder()
-      .setCustomId(`btn_crouch_${bot.accountId}`)
-      .setLabel(isCrouching ? 'Crouch (ON)' : 'Crouch')
-      .setStyle(isCrouching ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setCustomId(`btn_crouch_${accountId}`)
+      .setLabel('Toggle Crouch')
+      .setStyle(ButtonStyle.Secondary)
       .setDisabled(!isOnline);
+
+    const retryProfileBtn = new ButtonBuilder()
+      .setCustomId(`btn_retry_profile_${accountId}`)
+      .setLabel('Retry Profile Check')
+      .setStyle(ButtonStyle.Secondary);
+
+    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
 
     const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
       tpacceptBtn,
       joinBtn,
       leaveBtn
     );
+    rows.push(row1);
 
     const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
       setAfkBtn,
       unafkBtn,
       crouchBtn
     );
-
-    const rows: ActionRowBuilder<ButtonBuilder>[] = [row1, row2];
-
-    const retryProfileBtn = new ButtonBuilder()
-      .setCustomId(`btn_retry_profile_${bot.accountId}`)
-      .setLabel('Retry Profile Check')
-      .setStyle(ButtonStyle.Secondary);
+    rows.push(row2);
 
     const publicUrl =
       process.env.PUBLIC_BASE_URL ||
@@ -203,8 +221,8 @@ export class DiscordControlEmbed {
     return rows;
   }
 
-  public static async postOrUpdateEmbed(bot: BedrockBot, channel: TextChannel): Promise<void> {
-    const accountId = bot.accountId;
+  public static async postOrUpdateEmbed(bot: BedrockBot | BotOrData, channel: TextChannel): Promise<void> {
+    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
     const state = this.loadState();
     const stored = state[accountId];
 
@@ -257,20 +275,21 @@ export class DiscordControlEmbed {
     }
   }
 
-  public static queueEmbedUpdate(bot: BedrockBot, channel: TextChannel): void {
+  public static queueEmbedUpdate(bot: BedrockBot | BotOrData, channel: TextChannel): void {
+    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
     // If an update is already scheduled to fire, let it execute without pushing back indefinitely
-    if (this.updateDebounceTimers.has(bot.accountId)) {
+    if (this.updateDebounceTimers.has(accountId)) {
       return;
     }
 
     const timer = setTimeout(() => {
-      this.updateDebounceTimers.delete(bot.accountId);
+      this.updateDebounceTimers.delete(accountId);
       this.postOrUpdateEmbed(bot, channel).catch((err) => {
-        logger.debug(`Throttled embed update failed for ${bot.accountId}`, bot.accountId);
+        logger.debug(`Throttled embed update failed for ${accountId}`, accountId);
       });
     }, 2000);
 
-    this.updateDebounceTimers.set(bot.accountId, timer);
+    this.updateDebounceTimers.set(accountId, timer);
   }
 
   public static deleteState(accountId: string): void {

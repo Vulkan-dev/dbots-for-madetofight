@@ -490,6 +490,13 @@ export class AccountManager extends EventEmitter {
         this.emit('accountRemoved', account_id, payload?.xboxUsername);
         break;
 
+      case 'REGISTER_NODE_CATEGORY':
+        if (payload?.nodeId && payload?.categoryId) {
+          logger.info(`Received REGISTER_NODE_CATEGORY: ${payload.nodeId} -> ${payload.categoryId}`);
+          this.emit('registerNodeCategory', payload.nodeId, payload.categoryId);
+        }
+        break;
+
       case 'SIGNOUT':
         if (account_id) await this.signOutAccount(account_id);
         break;

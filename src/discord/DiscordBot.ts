@@ -27,6 +27,7 @@ import { IgnoreListStorage } from '../storage/IgnoreListStorage';
 import { AppConfig } from '../config';
 import { logger } from '../utils/logger';
 import {
+  getAccountById,
   getAllAccounts,
   getAllNodes,
   insertCommand,
@@ -40,6 +41,7 @@ export class DiscordBot {
   private channelManager: DiscordChannelManager | null = null;
   private botChannels: Map<string, TextChannel> = new Map();
   private hookedBotIds: Set<string> = new Set();
+  private nodeCategories: Map<string, string> = new Map();
 
   constructor(manager: AccountManager, appConfig?: AppConfig) {
     this.manager = manager;
@@ -78,18 +80,11 @@ export class DiscordBot {
         this.channelManager = new DiscordChannelManager(this.client, categoryId, allowedUserId);
         await this.syncAllBotChannels();
 
-        // Periodic embed update every 5 minutes to keep timestamps and status in sync
+        // Periodic embed update and remote worker bot discovery every 30 seconds
         setInterval(async () => {
           if (!this.channelManager) return;
-          const allBots = this.manager.getAllBots();
-          for (const bot of allBots) {
-            const ch = this.botChannels.get(bot.accountId) || (await this.channelManager.getOrCreateBotChannel(bot));
-            if (ch) {
-              this.botChannels.set(bot.accountId, ch);
-              DiscordControlEmbed.queueEmbedUpdate(bot, ch);
-            }
-          }
-        }, 300000);
+          await this.syncAllBotChannels();
+        }, 30000);
       }
 
       // Register Slash Commands with Discord Application API
@@ -172,6 +167,14 @@ export class DiscordBot {
         logger.debug(`Error cleaning up channel for removed bot [${accountId}]: ${err}`);
       }
     });
+
+    this.manager.on('registerNodeCategory', async (nodeId: string, catId: string) => {
+      try {
+        await this.registerNodeCategory(nodeId, catId);
+      } catch (err) {
+        logger.debug(`Error registering node category for [${nodeId}]: ${err}`);
+      }
+    });
   }
 
   /**
@@ -242,15 +245,103 @@ export class DiscordBot {
     logger.info('Registered Discord slash commands: /add, /remove, /perms, /ignore, /list, /ngrok, /link, /removebot');
   }
 
+  public resolveCategoryForNode(nodeId: string): string {
+    if (!nodeId) return '';
+    if (this.nodeCategories.has(nodeId)) {
+      return this.nodeCategories.get(nodeId)!;
+    }
+
+    // Check environment variables on Master Node:
+    const sanitized = nodeId.toUpperCase().replace(/[^A-Z0-9]/g, '_'); // e.g. "NODE_5"
+    const numOnly = nodeId.replace(/\D+/g, ''); // e.g. "5"
+    const envCandidates = [
+      process.env[`${sanitized}_DISCORD_BOT_CATEGORY_ID`],
+      process.env[`${sanitized}_CATEGORY_ID`],
+      process.env[`NODE_${numOnly}_DISCORD_BOT_CATEGORY_ID`],
+      process.env[`NODE_DISCORD_BOT_CATEGORY_ID_${sanitized}`],
+      process.env[`NODE_DISCORD_BOT_CATEGORY_ID_${numOnly}`],
+    ];
+    for (const val of envCandidates) {
+      if (val && val.trim()) {
+        this.nodeCategories.set(nodeId, val.trim());
+        return val.trim();
+      }
+    }
+
+    if (nodeId === this.appConfig?.nodeId || nodeId === 'node-1') {
+      const selfCat =
+        this.appConfig?.discord.nodeBotCategoryId ||
+        process.env.NODE_DISCORD_BOT_CATEGORY_ID ||
+        this.appConfig?.discord.botCategoryId ||
+        process.env.DISCORD_BOT_CATEGORY_ID ||
+        '';
+      if (selfCat) return selfCat;
+    }
+
+    return (
+      this.appConfig?.discord.botCategoryId ||
+      process.env.DISCORD_BOT_CATEGORY_ID ||
+      ''
+    );
+  }
+
+  public async registerNodeCategory(nodeId: string, categoryId: string): Promise<void> {
+    if (!nodeId || !categoryId) return;
+    this.nodeCategories.set(nodeId, categoryId);
+    logger.info(`Registered Discord category [${categoryId}] for node '${nodeId}'`);
+    await this.syncAllBotChannels();
+  }
+
   /**
-   * Discovers or creates Discord channels and initial control embeds for all registered bots.
+   * Discovers or creates Discord channels and initial control embeds for all registered bots
+   * across this node and all remote worker nodes.
    */
   public async syncAllBotChannels(): Promise<void> {
     if (!this.channelManager) return;
 
+    // 1. Local bots on this Master node
     const allBots = this.manager.getAllBots();
     for (const bot of allBots) {
       await this.setupBotChannel(bot);
+    }
+
+    // 2. Discover and sync all bots across all remote worker nodes from Supabase
+    try {
+      const allAccounts = await getAllAccounts();
+      for (const acc of allAccounts) {
+        const accountId = acc.id;
+        // Skip if already managed locally as a live BedrockBot
+        if (this.manager.getBot(accountId)) continue;
+
+        const targetCategory = this.resolveCategoryForNode(acc.node_id);
+        if (!targetCategory) continue;
+
+        const botData = {
+          accountId,
+          xboxUsername: acc.gamertag,
+          gamertag: acc.gamertag,
+          inGameIgn: acc.ign,
+          ign: acc.ign,
+          status: acc.status,
+          pos_x: acc.pos_x,
+          pos_y: acc.pos_y,
+          pos_z: acc.pos_z,
+          auth_status: acc.auth_status,
+          auth_error: acc.auth_error,
+          msa_code: acc.msa_code,
+          msa_url: acc.msa_url,
+          afk_spot_active: acc.afk_spot_active,
+          node_id: acc.node_id,
+        };
+
+        const channel = await this.channelManager.getOrCreateBotChannel(botData, targetCategory);
+        if (channel) {
+          this.botChannels.set(accountId, channel);
+          await DiscordControlEmbed.postOrUpdateEmbed(botData, channel);
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Remote bot sync error across nodes: ${err?.message || err}`);
     }
   }
 
@@ -521,8 +612,49 @@ export class DiscordBot {
     const action = parts[1]; // tpaccept, join, leave, setafk
     const accountId = parts.slice(2).join('_');
 
-    const bot = this.manager.getBot(accountId);
+    let bot = this.manager.getBot(accountId);
     if (!bot) {
+      const accountRow = await getAccountById(accountId);
+      if (accountRow && accountRow.node_id && accountRow.node_id !== this.appConfig?.nodeId) {
+        const actionMap: Record<string, string> = {
+          'tpaccept': 'CHAT',
+          'join': 'CONNECT',
+          'leave': 'DISCONNECT',
+          'setafk': 'SET_AFK',
+          'confirmafk': 'RESET_AFK',
+          'unafk': 'TOGGLE_AFK_MONITOR',
+          'crouch': 'BOT_ACTION',
+          'retry_profile': 'RETRY_PROFILE',
+        };
+        const remoteAction = actionMap[action] || action.toUpperCase();
+        const payload: any = {};
+        if (action === 'tpaccept') payload.message = '/tpaccept';
+        if (action === 'crouch') payload.action = 'toggle_crouch';
+
+        await insertCommand(accountRow.node_id, accountId, remoteAction, payload);
+
+        // Also attempt direct HTTP call if target node URL is known
+        try {
+          const nodes = await getAllNodes();
+          const targetNode = nodes.find((n: any) => n.id === accountRow.node_id);
+          if (targetNode && targetNode.url) {
+            const axios = require('axios');
+            if (action === 'tpaccept') {
+              axios.post(`${targetNode.url}/api/bot/chat`, { accountId, message: '/tpaccept' }, { timeout: 4000 }).catch(() => {});
+            } else if (action === 'join') {
+              axios.post(`${targetNode.url}/api/accounts/connect`, { accountId }, { timeout: 4000 }).catch(() => {});
+            } else if (action === 'leave') {
+              axios.post(`${targetNode.url}/api/accounts/disconnect`, { accountId }, { timeout: 4000 }).catch(() => {});
+            } else if (action === 'crouch') {
+              axios.post(`${targetNode.url}/api/bot/action`, { accountId, action: 'toggle_crouch' }, { timeout: 4000 }).catch(() => {});
+            }
+          }
+        } catch {}
+
+        await interaction.reply({ content: `✅ Dispatched ${action} to ${accountRow.node_id} for bot #${accountId}.`, ephemeral: true });
+        return;
+      }
+
       await interaction.reply({
         content: `Bot account '${accountId}' not found.`,
         ephemeral: true,
