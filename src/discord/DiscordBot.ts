@@ -31,6 +31,7 @@ import {
   getAllAccounts,
   getAllNodes,
   insertCommand,
+  getRegisteredNodeCategories,
 } from '../database/SupabaseClient';
 
 export class DiscordBot {
@@ -298,6 +299,17 @@ export class DiscordBot {
    */
   public async syncAllBotChannels(): Promise<void> {
     if (!this.channelManager) return;
+
+    // 0. Auto-load all registered node categories from Supabase
+    try {
+      const storedCategories = await getRegisteredNodeCategories();
+      for (const [nId, catId] of storedCategories.entries()) {
+        if (!this.nodeCategories.has(nId)) {
+          this.nodeCategories.set(nId, catId);
+          logger.info(`Loaded registered Discord category [${catId}] for node '${nId}' from Supabase`);
+        }
+      }
+    } catch {}
 
     // 1. Local bots on this Master node
     const allBots = this.manager.getAllBots();

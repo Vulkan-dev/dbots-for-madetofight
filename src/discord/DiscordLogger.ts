@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { Client, TextChannel, EmbedBuilder } from 'discord.js';
 import { logger } from '../utils/logger';
-import { getAllNodes } from '../database/SupabaseClient';
+import { getAllNodes, insertCommand } from '../database/SupabaseClient';
 
 export class DiscordLogger {
   private client: Client | null = null;
@@ -41,14 +41,27 @@ export class DiscordLogger {
 
   private async relayToMaster(payload: any): Promise<void> {
     const masterUrl = await this.getMasterNodeUrl();
-    if (!masterUrl) return;
-    try {
-      await axios.post(`${masterUrl}/api/internal/discord-log`, payload, {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 6000,
-      });
-    } catch (err: any) {
-      logger.debug(`Relay to master Discord bot failed: ${err?.message}`);
+    let httpDelivered = false;
+    if (masterUrl) {
+      try {
+        const res = await axios.post(`${masterUrl}/api/internal/discord-log`, payload, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 5000,
+        });
+        if (res.status === 200) httpDelivered = true;
+      } catch (err: any) {
+        logger.debug(`HTTP relay to master Discord bot failed: ${err?.message}`);
+      }
+    }
+
+    // Always ensure delivery via Supabase commands table for node-1 if HTTP failed or wasn't available
+    if (!httpDelivered) {
+      try {
+        await insertCommand('node-1', null, 'DISCORD_LOG', payload);
+        logger.info(`Relayed Discord log (${payload.type} for ${payload.botName || 'bot'}) to master node via Supabase queue`);
+      } catch (err: any) {
+        logger.debug(`Supabase command relay failed: ${err?.message}`);
+      }
     }
   }
 

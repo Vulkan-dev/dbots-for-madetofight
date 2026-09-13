@@ -507,6 +507,25 @@ export class AccountManager extends EventEmitter {
         }
         break;
 
+      case 'DISCORD_LOG':
+        if (payload?.type) {
+          try {
+            const { discordLogger } = require('../discord/DiscordLogger');
+            if (payload.type === 'join') {
+              await discordLogger.logBotJoin(payload.botName, payload.ign, payload.serverHost);
+            } else if (payload.type === 'leave') {
+              await discordLogger.logBotLeft(payload.botName, payload.ign, payload.reason);
+            } else if (payload.type === 'afk') {
+              await discordLogger.logAfkActivity(payload.botName, payload.message);
+            } else if (payload.type === 'player_detected') {
+              await discordLogger.logPlayerDetected(payload.botName, payload.playerName, payload.distance, payload.posStr);
+            }
+          } catch (err: any) {
+            logger.debug(`DISCORD_LOG processing failed: ${err?.message}`);
+          }
+        }
+        break;
+
       case 'SIGNOUT':
         if (account_id) await this.signOutAccount(account_id);
         break;

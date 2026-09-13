@@ -252,3 +252,27 @@ export async function removeFromIgnoreList(playerName: string): Promise<void> {
   const client = getSupabaseClient();
   await client.from('ignore_list').delete().eq('player_name', playerName.toLowerCase());
 }
+
+// ─── Registered Node Categories ────────────────────────────────────────────────
+export async function getRegisteredNodeCategories(): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  try {
+    const client = getSupabaseClient();
+    const { data, error } = await client
+      .from('commands')
+      .select('payload')
+      .eq('action', 'REGISTER_NODE_CATEGORY')
+      .order('created_at', { ascending: false });
+    if (!error && data) {
+      for (const row of data) {
+        const payload = row.payload;
+        if (payload?.nodeId && payload?.categoryId && !map.has(payload.nodeId)) {
+          map.set(payload.nodeId, payload.categoryId);
+        }
+      }
+    }
+  } catch (err: any) {
+    logger.debug(`getRegisteredNodeCategories error: ${err?.message}`);
+  }
+  return map;
+}
