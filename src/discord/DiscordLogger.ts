@@ -12,9 +12,9 @@ export class DiscordLogger {
   private lastMasterUrlLookup: number = 0;
 
   constructor() {
-    this.logChannelId = process.env.DISCORD_LOG_CHANNEL_ID || '1544779083509141504';
-    this.joinChannelId = process.env.DISCORD_JOIN_LOG_CHANNEL_ID || '1545612152797401188';
-    this.leftChannelId = process.env.DISCORD_LEFT_LOG_CHANNEL_ID || '1545612172867145799';
+    this.logChannelId = (process.env.DISCORD_LOG_CHANNEL_ID || '').trim();
+    this.joinChannelId = (process.env.DISCORD_JOIN_LOG_CHANNEL_ID || '').trim();
+    this.leftChannelId = (process.env.DISCORD_LEFT_LOG_CHANNEL_ID || '').trim();
   }
 
   public setClient(client: Client): void {
@@ -112,7 +112,9 @@ export class DiscordLogger {
       )
       .setTimestamp();
 
-    await this.sendEmbedToChannel(this.joinChannelId, embed);
+    const targetChannel = (process.env.DISCORD_JOIN_LOG_CHANNEL_ID || this.joinChannelId || '').trim();
+    if (!targetChannel) return;
+    await this.sendEmbedToChannel(targetChannel, embed);
   }
 
   /**
@@ -134,7 +136,9 @@ export class DiscordLogger {
       )
       .setTimestamp();
 
-    await this.sendEmbedToChannel(this.leftChannelId, embed);
+    const targetChannel = (process.env.DISCORD_LEFT_LOG_CHANNEL_ID || this.leftChannelId || '').trim();
+    if (!targetChannel) return;
+    await this.sendEmbedToChannel(targetChannel, embed);
   }
 
   /**
@@ -149,7 +153,9 @@ export class DiscordLogger {
       return;
     }
 
-    await this.sendMessageToChannel(this.logChannelId, content);
+    const targetChannel = (process.env.DISCORD_LOG_CHANNEL_ID || this.logChannelId || '').trim();
+    if (!targetChannel) return;
+    await this.sendMessageToChannel(targetChannel, content);
   }
 
   /**
@@ -172,7 +178,9 @@ export class DiscordLogger {
       )
       .setTimestamp();
 
-    await this.sendEmbedToChannel(this.logChannelId, embed);
+    const targetChannel = (process.env.DISCORD_LOG_CHANNEL_ID || this.logChannelId || '').trim();
+    if (!targetChannel) return;
+    await this.sendEmbedToChannel(targetChannel, embed);
   }
 }
 
