@@ -409,44 +409,7 @@ export class BedrockBot extends EventEmitter {
       }
     });
 
-    let userPreHitCrouch = false;
-    this.playerHitResponse.setCrouchCallback((isSneaking: boolean, isCompleted?: boolean) => {
-      if (isSneaking && !isCompleted) {
-        userPreHitCrouch = this.actionController.isCrouching;
-      }
-      const finalState = isCompleted ? userPreHitCrouch : isSneaking;
 
-      // 1. Synchronize with KeepAliveEngine so 20Hz player_auth_input contains sneak flags
-      if (this.keepAliveEngine) {
-        this.keepAliveEngine.setSneak(finalState);
-      }
-      this.actionController.isCrouching = finalState;
-
-      if (this.client && this.state === ConnectionState.CONNECTED && this.runtimeEntityId != null) {
-        try {
-          this.client.queue('player_action', {
-            runtime_entity_id: this.runtimeEntityId,
-            action: finalState ? 'start_sneak' : 'stop_sneak',
-            position: { x: 0, y: 0, z: 0 },
-            result_position: { x: 0, y: 0, z: 0 },
-            face: 0,
-          });
-        } catch (err) {
-          logger.debug('Failed to send sneak packet', this.accountId);
-        }
-
-        try {
-          this.client.queue('player_input', {
-            motion_x: 0,
-            motion_z: 0,
-            jumping: false,
-            sneaking: finalState,
-          });
-        } catch (err) {
-          logger.debug('Failed to send player_input sneak packet', this.accountId);
-        }
-      }
-    });
 
     // Watchdog auto-reconnect handler: Always attempts reconnection regardless of disconnect reason
     this.watchdog.setReconnectCallback(async () => {

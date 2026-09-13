@@ -348,7 +348,10 @@ export class KeepAliveEngine {
         currentFlags.add('sneak_down');
         currentFlags.add('sneak_current_raw');
         currentFlags.add('change_height');
-        currentFlags.add('start_sneaking');
+        // Only send start_sneaking on the transition tick, NOT every tick (prevents toggle spam)
+        if (!this.lastSneakingState) {
+          currentFlags.add('start_sneaking');
+        }
       } else if (this.stopSneakTicks > 0) {
         currentFlags.add('stop_sneaking');
         this.stopSneakTicks--;
@@ -388,14 +391,14 @@ export class KeepAliveEngine {
         raw_move_vector: (deltaX !== 0 || deltaZ !== 0) ? { x: 0, y: 1 } : KeepAliveEngine.ZERO_VEC2,
       });
 
-      // Queue player_input only when jumping/sneaking state changes or once per second (every 20 ticks)
+      // Queue player_input ONLY when jumping/sneaking state actually changes (never spam periodically)
       const currentJumping = this.jumpTicksRemaining > 0;
       const currentSneaking = this.isSneakingState;
       const inputStateChanged =
         currentJumping !== this.lastJumpingState ||
         currentSneaking !== this.lastSneakingState;
 
-      if (inputStateChanged || this.ticksElapsed % 20 === 0) {
+      if (inputStateChanged) {
         this.lastJumpingState = currentJumping;
         this.lastSneakingState = currentSneaking;
         this.client.queue('player_input', {

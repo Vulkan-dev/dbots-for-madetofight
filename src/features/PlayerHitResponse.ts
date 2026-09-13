@@ -58,18 +58,7 @@ export class PlayerHitResponse {
       this.lookCallback(randomDeltaPitch, randomDeltaYaw);
       await this.delay(150);
     }
-
-    // 2. Perform crouch response pulses
-    if (this.crouchCallback) {
-      for (let i = 0; i < this.crouchCount; i++) {
-        // Crouch ON
-        this.crouchCallback(true, false);
-        await this.delay(200);
-        // Crouch OFF
-        this.crouchCallback(false, i === this.crouchCount - 1);
-        await this.delay(200);
-      }
-    }
+    // Crouch pulses removed: Bot crouch state is strictly user-controlled and never modified automatically
   }
 
   private delay(ms: number): Promise<void> {
