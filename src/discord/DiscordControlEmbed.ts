@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  Message,
   TextChannel,
 } from 'discord.js';
 import fs from 'fs';
@@ -224,7 +225,7 @@ export class DiscordControlEmbed {
   public static async postOrUpdateEmbed(bot: BedrockBot | BotOrData, channel: TextChannel): Promise<void> {
     const accountId = (bot as any).accountId || (bot as any).id || 'bot';
     const state = this.loadState();
-    const stored = state[accountId];
+    let stored = state[accountId];
 
     const embed = this.buildControlEmbed(bot);
     const buttons = this.buildControlButtons(bot);
@@ -232,31 +233,75 @@ export class DiscordControlEmbed {
     // Compute a lightweight content digest to skip redundant Discord API edit calls
     const digest = `${embed.data.title || ''}|${embed.data.description || ''}|${embed.data.color || ''}|${buttons.length}`;
 
+    let targetMsg: Message | null = null;
+
+    // 1. Check existing stored message ID
     if (stored && stored.channelId === channel.id && stored.messageId) {
+      try {
+        targetMsg =
+          channel.messages.cache.get(stored.messageId) ||
+          (await channel.messages.fetch(stored.messageId).catch(() => null));
+      } catch {
+        targetMsg = null;
+      }
+    }
+
+    // 2. Node restart recovery: If no stored message found in local state (or state lost on restart/redeploy),
+    // scan channel messages to discover and adopt any existing control embed sent by this bot!
+    if (!targetMsg) {
+      try {
+        const recentMessages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+        if (recentMessages) {
+          const myId = channel.client.user?.id;
+          const botEmbedMessages = recentMessages.filter(
+            (m) => m.author.id === myId && m.embeds.length > 0
+          );
+          if (botEmbedMessages.size > 0) {
+            // Sort so we adopt the newest embed message
+            const sorted = Array.from(botEmbedMessages.values()).sort(
+              (a, b) => b.createdTimestamp - a.createdTimestamp
+            );
+            targetMsg = sorted[0];
+
+            // Prune any other duplicate/orphaned bot embed messages in the channel to keep it clean
+            for (let i = 1; i < sorted.length; i++) {
+              sorted[i].delete().catch(() => {});
+            }
+
+            logger.info(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name} after restart`, accountId);
+            state[accountId] = {
+              channelId: channel.id,
+              messageId: targetMsg.id,
+            };
+            this.saveState(state);
+            stored = state[accountId];
+          }
+        }
+      } catch (scanErr) {
+        logger.debug(`Could not scan channel for existing embed messages: ${scanErr}`);
+      }
+    }
+
+    // 3. Edit existing message in-place
+    if (targetMsg) {
       if (this.lastRenderedDigest.get(accountId) === digest) {
         // Content has not changed. Skip redundant Discord HTTP edit request!
         return;
       }
 
       try {
-        // Fast-path: check in-memory cache first before doing network fetch
-        const existingMsg =
-          channel.messages.cache.get(stored.messageId) ||
-          (await channel.messages.fetch(stored.messageId).catch(() => null));
-
-        if (existingMsg) {
-          await existingMsg.edit({
-            embeds: [embed],
-            components: buttons,
-          });
-          this.lastRenderedDigest.set(accountId, digest);
-          return;
-        }
+        await targetMsg.edit({
+          embeds: [embed],
+          components: buttons,
+        });
+        this.lastRenderedDigest.set(accountId, digest);
+        return;
       } catch (err) {
-        logger.debug(`Existing control message ${stored.messageId} could not be fetched or edited, creating new one.`, accountId);
+        logger.debug(`Existing control message ${targetMsg.id} could not be edited, creating new one.`, accountId);
       }
     }
 
+    // 4. Send fresh message only if none exists
     try {
       const newMsg = await channel.send({
         embeds: [embed],
@@ -332,14 +377,27 @@ export class DiscordControlEmbed {
         channel = await client.channels.fetch(channelId).catch(() => null);
       }
 
-      if (channel && channel.isTextBased() && messageId) {
-        const msg = await channel.messages.fetch(messageId).catch(() => null);
-        if (msg) {
-          await msg.delete().catch((err: any) => {
-            logger.debug(`Failed to delete Discord embed message [${messageId}]: ${err?.message || err}`);
-          });
-          logger.info(`Successfully deleted Discord control embed message [${messageId}] for [${accountId}]`, accountId);
+      if (channel && channel.isTextBased()) {
+        if (messageId) {
+          const msg = await channel.messages.fetch(messageId).catch(() => null);
+          if (msg) {
+            await msg.delete().catch((err: any) => {
+              logger.debug(`Failed to delete Discord embed message [${messageId}]: ${err?.message || err}`);
+            });
+            logger.info(`Successfully deleted Discord control embed message [${messageId}] for [${accountId}]`, accountId);
+          }
         }
+
+        // Clean up any remaining bot embed messages in the channel
+        try {
+          const recent = await channel.messages.fetch({ limit: 10 }).catch(() => null);
+          if (recent && client?.user) {
+            const botMsgs = recent.filter((m: any) => m.author.id === client.user.id && m.embeds?.length > 0);
+            for (const [, bm] of botMsgs) {
+              await bm.delete().catch(() => {});
+            }
+          }
+        } catch {}
       }
     } catch (err: any) {
       logger.debug(`Error in deleteEmbedMessage for [${accountId}]: ${err?.message || err}`);

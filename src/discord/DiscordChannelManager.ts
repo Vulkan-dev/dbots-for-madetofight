@@ -41,6 +41,8 @@ export class DiscordChannelManager {
     return sanitized;
   }
 
+  private static channelCreationLocks: Map<string, Promise<TextChannel | null>> = new Map();
+
   public async getOrCreateBotChannel(bot: BotOrData, customCategoryId?: string): Promise<TextChannel | null> {
     const effectiveCategoryId = customCategoryId || this.categoryId;
     if (!effectiveCategoryId) {
@@ -48,6 +50,25 @@ export class DiscordChannelManager {
       return null;
     }
 
+    const accountId = (bot as any).accountId || (bot as any).id || 'unknown';
+    const lockKey = `${effectiveCategoryId}_${accountId}`;
+
+    // Deduplicate concurrent/in-flight channel requests for the same bot account and category
+    const existingLock = DiscordChannelManager.channelCreationLocks.get(lockKey);
+    if (existingLock) {
+      return existingLock;
+    }
+
+    const task = this._doGetOrCreateBotChannel(bot, effectiveCategoryId);
+    DiscordChannelManager.channelCreationLocks.set(lockKey, task);
+    try {
+      return await task;
+    } finally {
+      DiscordChannelManager.channelCreationLocks.delete(lockKey);
+    }
+  }
+
+  private async _doGetOrCreateBotChannel(bot: BotOrData, effectiveCategoryId: string): Promise<TextChannel | null> {
     const accountId = (bot as any).accountId || (bot as any).id || 'unknown';
     const xboxUsername = (bot as any).xboxUsername || (bot as any).gamertag || '';
     const nodeId = (bot as any).nodeId || (bot as any).node_id || '';
@@ -66,7 +87,8 @@ export class DiscordChannelManager {
 
       const expectedChannelName = this.getChannelNameForBot(bot);
 
-      const existingChannel = guild.channels.cache.find(
+      // Find all channels matching this bot
+      const matchingChannels = guild.channels.cache.filter(
         (ch) =>
           ch &&
           ch.type === ChannelType.GuildText &&
@@ -79,19 +101,43 @@ export class DiscordChannelManager {
             (xboxUsername && ch.name === `bot-${xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')}`))
       );
 
-      if (existingChannel && existingChannel.isTextBased()) {
-        logger.info(`Found existing Discord channel #${existingChannel.name} for bot [${accountId}] (Category: ${effectiveCategoryId})`, accountId);
-        // If channel is under a different category, move it to the target category
-        if (existingChannel.parentId !== effectiveCategoryId && typeof (existingChannel as any).setParent === 'function') {
-          await (existingChannel as any).setParent(effectiveCategoryId).catch(() => {});
+      if (matchingChannels.size > 0) {
+        const matchingArray = Array.from(matchingChannels.values()) as TextChannel[];
+        // Sort ascending by creation timestamp so the primary/oldest channel is kept
+        matchingArray.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+        const primaryChannel = matchingArray[0];
+
+        // Prune and auto-delete any duplicate channels that may have been created
+        if (matchingArray.length > 1) {
+          for (let i = 1; i < matchingArray.length; i++) {
+            const dup = matchingArray[i];
+            logger.warn(`Pruning duplicate Discord channel #${dup.name} (ID: ${dup.id}) for bot [${accountId}]`, accountId);
+            dup.delete(`Duplicate channel cleanup for bot ${accountId}`).catch((err) => {
+              logger.debug(`Failed to delete duplicate channel ${dup.id}: ${err?.message || err}`);
+            });
+          }
         }
+
+        logger.info(`Found existing Discord channel #${primaryChannel.name} for bot [${accountId}] (Category: ${effectiveCategoryId})`, accountId);
+
+        // If channel is under a different category, move it to the target category
+        if (primaryChannel.parentId !== effectiveCategoryId && typeof (primaryChannel as any).setParent === 'function') {
+          await (primaryChannel as any).setParent(effectiveCategoryId).catch(() => {});
+        }
+
+        // Ensure topic includes the accountId marker
+        const expectedTopic = `Private control channel for DonutSMP Bedrock bot [${accountId}] (Node: ${nodeId || 'Master'})`;
+        if (!primaryChannel.topic || !primaryChannel.topic.includes(`[${accountId}]`)) {
+          primaryChannel.setTopic(expectedTopic).catch(() => {});
+        }
+
         // If GamerTag is now known and channel name differs, rename channel to GamerTag
-        if (xboxUsername && existingChannel.name !== expectedChannelName) {
-          existingChannel.setName(expectedChannelName).catch((e) => {
-            logger.debug(`Could not rename channel #${existingChannel.name} to ${expectedChannelName}: ${e?.message || e}`);
+        if (xboxUsername && primaryChannel.name !== expectedChannelName) {
+          primaryChannel.setName(expectedChannelName).catch((e) => {
+            logger.debug(`Could not rename channel #${primaryChannel.name} to ${expectedChannelName}: ${e?.message || e}`);
           });
         }
-        return existingChannel as TextChannel;
+        return primaryChannel;
       }
 
       const permissionOverwrites: any[] = [
@@ -198,6 +244,8 @@ export class DiscordChannelManager {
    */
   public async deleteBotChannel(botId: string, xboxUsername?: string, channelId?: string): Promise<boolean> {
     try {
+      let deletedAny = false;
+
       // 1. Direct channel deletion by channelId if provided
       if (channelId) {
         try {
@@ -206,7 +254,7 @@ export class DiscordChannelManager {
             const chName = (directCh as any).name || channelId;
             await (directCh as any).delete(`Bot account ${botId} deleted`);
             logger.info(`Deleted Discord channel #${chName} (ID: ${channelId}) for removed bot [${botId}]`, botId);
-            return true;
+            deletedAny = true;
           }
         } catch (err) {
           logger.debug(`Direct channel deletion by channelId [${channelId}] failed: ${err}`);
@@ -216,14 +264,14 @@ export class DiscordChannelManager {
       const targetId = botId.toLowerCase();
       const targetUser = xboxUsername ? xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '') : null;
 
-      // 2. Search category if categoryId is configured
+      // 2. Search category if categoryId is configured - delete all matching channels
       if (this.categoryId) {
         const category = await this.client.channels.fetch(this.categoryId).catch(() => null);
         if (category && category.type === ChannelType.GuildCategory) {
           const guild: Guild = (category as CategoryChannel).guild;
           await guild.channels.fetch().catch(() => {});
 
-          const channelToDelete = guild.channels.cache.find(
+          const channelsToDelete = guild.channels.cache.filter(
             (ch) =>
               ch &&
               ch.parentId === this.categoryId &&
@@ -234,38 +282,39 @@ export class DiscordChannelManager {
                 (targetUser && (ch.name === targetUser || ch.name === `bot-${targetUser}`)))
           );
 
-          if (channelToDelete) {
-            await channelToDelete.delete(`Bot account ${botId} deleted`);
-            logger.info(`Deleted Discord channel #${channelToDelete.name} for removed bot [${botId}]`, botId);
-            return true;
+          for (const [, channel] of channelsToDelete) {
+            await channel.delete(`Bot account ${botId} deleted`).catch(() => {});
+            logger.info(`Deleted Discord channel #${(channel as any).name} for removed bot [${botId}]`, botId);
+            deletedAny = true;
           }
         }
       }
 
-      // 3. Fallback across all cached guilds
+      // 3. Fallback across all cached guilds - delete all matching channels
       for (const [, guild] of this.client.guilds.cache) {
         try {
           await guild.channels.fetch().catch(() => {});
-          const channelToDelete = guild.channels.cache.find(
+          const channelsToDelete = guild.channels.cache.filter(
             (ch) =>
               ch &&
               ch.type === ChannelType.GuildText &&
               (((ch as TextChannel).topic && (ch as TextChannel).topic?.includes(`[${botId}]`)) ||
                 ch.name === `bot-${targetId}` ||
+                ch.name === targetId ||
                 (targetUser && (ch.name === targetUser || ch.name === `bot-${targetUser}`)))
           );
 
-          if (channelToDelete) {
-            await channelToDelete.delete(`Bot account ${botId} deleted`);
-            logger.info(`Deleted Discord channel #${channelToDelete.name} across guild for removed bot [${botId}]`, botId);
-            return true;
+          for (const [, channel] of channelsToDelete) {
+            await channel.delete(`Bot account ${botId} deleted`).catch(() => {});
+            logger.info(`Deleted Discord channel #${(channel as any).name} across guild for removed bot [${botId}]`, botId);
+            deletedAny = true;
           }
         } catch (innerErr) {
           logger.debug(`Guild scan channel deletion failed for guild ${guild.id}: ${innerErr}`);
         }
       }
 
-      return false;
+      return deletedAny;
     } catch (err) {
       logger.error(`Failed to delete Discord channel for bot [${botId}]`, botId, err);
       return false;

@@ -373,12 +373,16 @@ export class DiscordBot {
       this.hookedBotIds.add(bot.accountId);
 
       bot.on('stateChanged', async () => {
-        if (this.channelManager) {
-          const ch = await this.channelManager.getOrCreateBotChannel(bot);
-          if (ch) {
-            this.botChannels.set(bot.accountId, ch);
-            DiscordControlEmbed.queueEmbedUpdate(bot, ch);
+        let ch = this.botChannels.get(bot.accountId);
+        if (!ch && this.channelManager) {
+          const fetched = await this.channelManager.getOrCreateBotChannel(bot);
+          if (fetched) {
+            this.botChannels.set(bot.accountId, fetched);
+            ch = fetched;
           }
+        }
+        if (ch) {
+          DiscordControlEmbed.queueEmbedUpdate(bot, ch);
         }
       });
 
@@ -399,12 +403,16 @@ export class DiscordBot {
 
       if (bot.authManager) {
         bot.authManager.on('statusChanged', async () => {
-          if (this.channelManager) {
-            const ch = await this.channelManager.getOrCreateBotChannel(bot);
-            if (ch) {
-              this.botChannels.set(bot.accountId, ch);
-              DiscordControlEmbed.queueEmbedUpdate(bot, ch);
+          let ch = this.botChannels.get(bot.accountId);
+          if (!ch && this.channelManager) {
+            const fetched = await this.channelManager.getOrCreateBotChannel(bot);
+            if (fetched) {
+              this.botChannels.set(bot.accountId, fetched);
+              ch = fetched;
             }
+          }
+          if (ch) {
+            DiscordControlEmbed.queueEmbedUpdate(bot, ch);
           }
         });
       }
@@ -586,6 +594,16 @@ export class DiscordBot {
     }
 
     const parts = customId.split('_');
+
+    if (interaction.channel && interaction.channel.isTextBased()) {
+      const targetAccountId = customId.startsWith('btn_retry_profile_')
+        ? customId.replace('btn_retry_profile_', '')
+        : (parts.length >= 3 ? parts.slice(2).join('_') : '');
+      if (targetAccountId && !this.botChannels.has(targetAccountId)) {
+        this.botChannels.set(targetAccountId, interaction.channel as TextChannel);
+      }
+    }
+
     if (customId.startsWith('btn_retry_profile_')) {
       const accountId = customId.replace('btn_retry_profile_', '');
       const bot = this.manager.getBot(accountId);
@@ -777,9 +795,9 @@ export class DiscordBot {
       }
 
       // Refresh embed immediately after button action
-      const channel = this.botChannels.get(bot.accountId);
-      if (channel) {
-        await DiscordControlEmbed.postOrUpdateEmbed(bot, channel);
+      const channel = this.botChannels.get(bot.accountId) || (interaction.channel as TextChannel);
+      if (channel && channel.isTextBased()) {
+        await DiscordControlEmbed.postOrUpdateEmbed(bot, channel as TextChannel);
       }
     } catch (err: any) {
       logger.error(`Error handling button action ${action} for ${accountId}`, accountId, err);
