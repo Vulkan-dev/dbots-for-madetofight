@@ -13,6 +13,7 @@ import {
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 import { discordLogger } from '../discord/DiscordLogger';
+import { TokenStorage } from '../auth/TokenStorage';
 
 export class WebServer {
   private app: express.Application;
@@ -35,7 +36,7 @@ export class WebServer {
   }
 
   private configureMiddleware(): void {
-    this.app.use(express.json({ limit: '1mb' }));
+    this.app.use(express.json({ limit: '10mb' }));
 
     // CORS — normalize trailing slashes on both sides
     this.app.use((req, res, next) => {
@@ -361,6 +362,122 @@ export class WebServer {
         if (!bot) { res.status(404).json({ success: false, error: `Account '${accountId}' not found` }); return; }
         const ok = await bot.authManager.retryProfileCheck();
         res.json({ success: ok, status: bot.authManager.getStatus(), identity: bot.authManager.getIdentity() });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Export Tokens ────────────────────────────────────────────────────────
+    this.app.get('/api/tokens/export', async (req, res) => {
+      try {
+        const accountId = req.query.accountId ? String(req.query.accountId).trim() : undefined;
+        const result = await TokenStorage.exportTokens(accountId);
+        if (req.query.download === 'true') {
+          const filename = accountId && accountId !== 'all'
+            ? `bot-${accountId}-tokens.json`
+            : `donut-bots-tokens-${new Date().toISOString().slice(0, 10)}.json`;
+          res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+          res.setHeader('Content-Type', 'application/json');
+        }
+        res.json(result);
+      } catch (err: any) {
+        logger.error(`API: Export tokens failed: ${err.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Import / Upload Accounts via Token ──────────────────────────────────
+    this.app.post('/api/tokens/import', async (req, res) => {
+      try {
+        const body = req.body;
+        let accountsToImport: any[] = [];
+
+        if (body && Array.isArray(body.accounts)) {
+          accountsToImport = body.accounts;
+        } else if (Array.isArray(body)) {
+          accountsToImport = body;
+        } else if (body && body.accountId && (body.tokens || body.tokenData || body.token_data)) {
+          accountsToImport = [body];
+        } else if (typeof body === 'object' && body !== null) {
+          if (body.type === 'donut-bots-tokens' && Array.isArray(body.accounts)) {
+            accountsToImport = body.accounts;
+          } else {
+            for (const [key, val] of Object.entries(body)) {
+              if (typeof val === 'object' && val !== null) {
+                accountsToImport.push({
+                  accountId: key,
+                  tokens: val,
+                  nodeId: (val as any).nodeId,
+                  email: (val as any).email,
+                });
+              }
+            }
+          }
+        }
+
+        if (accountsToImport.length === 0) {
+          res.status(400).json({ success: false, error: 'No valid account token entries found in request body' });
+          return;
+        }
+
+        const defaultNode = (req.body.targetNodeId || this.config.nodeId);
+        const imported: string[] = [];
+        const errors: Array<{ accountId: string; error: string }> = [];
+
+        for (const item of accountsToImport) {
+          const accId = String(item.accountId || item.id || item.account_id || '').trim();
+          if (!accId) continue;
+          const email = (item.email || '').trim();
+          const targetNode = item.nodeId || item.node_id || defaultNode;
+          const tokens = item.tokens || item.tokenData || item.token_data || item;
+
+          const impRes = await TokenStorage.importAccountTokens(
+            accId,
+            email,
+            tokens,
+            targetNode,
+            this.config.nodeId
+          );
+
+          if (impRes.success) {
+            imported.push(accId);
+            if (targetNode === this.config.nodeId) {
+              await this.manager.reloadAccount(accId).catch(() => {});
+            } else {
+              try {
+                const nodes = await getAllNodes();
+                const nodeObj = nodes.find((n: any) => n.id === targetNode);
+                if (nodeObj && nodeObj.url) {
+                  const axios = require('axios');
+                  axios.post(`${nodeObj.url}/api/accounts/reload`, { accountId: accId }, { timeout: 4000 }).catch(() => {});
+                }
+              } catch {}
+              await insertCommand(targetNode, accId, 'RELOAD_ACCOUNT', { accountId: accId }).catch(() => {});
+            }
+          } else {
+            errors.push({ accountId: accId, error: impRes.error || 'Validation failed' });
+          }
+        }
+
+        res.json({
+          success: imported.length > 0,
+          importedCount: imported.length,
+          accounts: imported,
+          errors,
+        });
+      } catch (err: any) {
+        logger.error(`API: Import tokens failed: ${err.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Reload Account ──────────────────────────────────────────────────────
+    this.app.post('/api/accounts/reload', async (req, res) => {
+      const { accountId } = req.body;
+      if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
+      try {
+        const bot = await this.manager.reloadAccount(String(accountId));
+        res.json({ success: true, loaded: Boolean(bot) });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }
