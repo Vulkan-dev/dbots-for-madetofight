@@ -222,6 +222,62 @@ export class DiscordControlEmbed {
     return rows;
   }
 
+  /**
+   * Purges all messages in a bot channel so it starts completely fresh and clean on start.
+   */
+  public static async clearChannelMessages(channel: TextChannel): Promise<void> {
+    try {
+      // 1. Bulk delete recent messages (< 14 days old)
+      await channel.bulkDelete(100, true).catch(() => {});
+
+      // 2. Fetch and delete any remaining older messages
+      const remaining = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      if (remaining && remaining.size > 0) {
+        for (const [, msg] of remaining) {
+          await msg.delete().catch(() => {});
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Failed to clear messages in #${channel.name}: ${err?.message || err}`);
+    }
+  }
+
+  /**
+   * Clears the channel messages and posts a fresh control embed on start every time.
+   */
+  public static async clearChannelAndPostNewEmbed(
+    bot: BedrockBot | BotOrData,
+    channel: TextChannel
+  ): Promise<void> {
+    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
+
+    // 1. Purge all existing channel messages
+    await this.clearChannelMessages(channel);
+
+    // 2. Build and post fresh embed
+    const embed = this.buildControlEmbed(bot);
+    const buttons = this.buildControlButtons(bot);
+    const digest = `${embed.data.title || ''}|${embed.data.description || ''}|${embed.data.color || ''}|${buttons.length}`;
+
+    try {
+      const newMsg = await channel.send({
+        embeds: [embed],
+        components: buttons,
+      });
+
+      const state = this.loadState();
+      state[accountId] = {
+        channelId: channel.id,
+        messageId: newMsg.id,
+      };
+      this.saveState(state);
+      this.lastRenderedDigest.set(accountId, digest);
+      logger.info(`Cleared channel messages and posted fresh control embed (ID: ${newMsg.id}) in #${channel.name}`, accountId);
+    } catch (err) {
+      logger.error(`Failed to post fresh control embed message in channel #${channel.name}`, accountId, err);
+    }
+  }
+
   public static async postOrUpdateEmbed(bot: BedrockBot | BotOrData, channel: TextChannel): Promise<void> {
     const accountId = (bot as any).accountId || (bot as any).id || 'bot';
     const state = this.loadState();

@@ -331,4 +331,116 @@ export class DiscordChannelManager {
       return false;
     }
   }
+
+  /**
+   * Periodically sweeps a Discord category to delete any extra channels that do NOT correspond
+   * to any valid bot assigned to that node/category, as well as any duplicate channels.
+   */
+  public async purgeExtraChannels(
+    categoryId: string,
+    validBots: Array<{ id: string; gamertag?: string; ign?: string }>
+  ): Promise<number> {
+    if (!categoryId) return 0;
+    let deletedCount = 0;
+
+    try {
+      const category = await this.client.channels.fetch(categoryId).catch(() => null);
+      if (!category || category.type !== ChannelType.GuildCategory) return 0;
+
+      const guild: Guild = (category as CategoryChannel).guild;
+      await guild.channels.fetch().catch(() => {});
+
+      const categoryChannels = guild.channels.cache.filter(
+        (ch) => ch && ch.parentId === categoryId && ch.type === ChannelType.GuildText
+      );
+
+      // Build lookup sets for valid bots in this category
+      const validBotIds = new Set(validBots.map((b) => b.id.toLowerCase()));
+      const validNamesMap = new Map<string, string>(); // name -> botId
+      for (const b of validBots) {
+        const bId = b.id.toLowerCase();
+        validNamesMap.set(`bot-${bId}`, bId);
+        validNamesMap.set(bId, bId);
+        if (b.gamertag) {
+          const cleanGt = b.gamertag.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+          if (cleanGt) {
+            validNamesMap.set(cleanGt, bId);
+            validNamesMap.set(`bot-${cleanGt}`, bId);
+          }
+        }
+        if (b.ign) {
+          const cleanIgn = b.ign.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+          if (cleanIgn) {
+            validNamesMap.set(cleanIgn, bId);
+            validNamesMap.set(`bot-${cleanIgn}`, bId);
+          }
+        }
+      }
+
+      const seenBots: Map<string, TextChannel[]> = new Map();
+      const extraChannels: TextChannel[] = [];
+
+      for (const [, ch] of categoryChannels) {
+        const textCh = ch as TextChannel;
+        const topic = textCh.topic || '';
+        const topicMatch = topic.match(/\[([a-zA-Z0-9_-]+)\]/);
+        let identifiedBotId: string | null = null;
+
+        if (topicMatch) {
+          const tid = topicMatch[1].toLowerCase();
+          if (validBotIds.has(tid)) {
+            identifiedBotId = tid;
+          }
+        }
+
+        if (!identifiedBotId) {
+          const cleanName = textCh.name.toLowerCase();
+          if (validNamesMap.has(cleanName)) {
+            identifiedBotId = validNamesMap.get(cleanName)!;
+          }
+        }
+
+        if (!identifiedBotId) {
+          extraChannels.push(textCh);
+        } else {
+          if (!seenBots.has(identifiedBotId)) {
+            seenBots.set(identifiedBotId, []);
+          }
+          seenBots.get(identifiedBotId)!.push(textCh);
+        }
+      }
+
+      // 1. Delete extra channels not belonging to any valid bot in this category
+      for (const ch of extraChannels) {
+        try {
+          logger.warn(`Deleting extra non-bot channel #${ch.name} (ID: ${ch.id}) from category [${categoryId}]`);
+          await ch.delete('Deleting extra channel from managed bot category');
+          deletedCount++;
+        } catch (delErr: any) {
+          logger.debug(`Failed to delete extra channel #${ch.name}: ${delErr?.message || delErr}`);
+        }
+      }
+
+      // 2. Delete duplicate channels for the same bot (keep the oldest primary channel)
+      for (const [bId, channels] of seenBots.entries()) {
+        if (channels.length > 1) {
+          channels.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+          for (let i = 1; i < channels.length; i++) {
+            const dup = channels[i];
+            try {
+              logger.warn(`Deleting duplicate channel #${dup.name} (ID: ${dup.id}) for bot [${bId}] in category [${categoryId}]`);
+              await dup.delete(`Duplicate channel cleanup for bot ${bId}`);
+              deletedCount++;
+            } catch (dupErr: any) {
+              logger.debug(`Failed to delete duplicate channel #${dup.name}: ${dupErr?.message || dupErr}`);
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.error(`Error during category channel sweep for category [${categoryId}]: ${err?.message || err}`);
+    }
+
+    return deletedCount;
+  }
 }

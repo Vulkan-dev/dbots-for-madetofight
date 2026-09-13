@@ -79,18 +79,22 @@ export class DiscordBot {
 
       if (categoryId) {
         this.channelManager = new DiscordChannelManager(this.client, categoryId, allowedUserId);
-        await this.syncAllBotChannels();
+        
+        // Initial sync on start: clears messages, sends fresh embed, and sweeps extra channels
+        await this.syncAllBotChannels(true);
+        await this.sweepExtraCategoryChannels();
 
-        // 3rd: Periodic Discord embed refresh every 5 minutes (300,000 ms)
+        // 3rd: Periodic Discord embed refresh and extra channel sweep every 5 minutes (300,000 ms)
         setInterval(async () => {
           if (!this.channelManager) return;
           await this.refreshAllEmbeds();
+          await this.sweepExtraCategoryChannels();
         }, 300000);
 
         // Periodic bot channel discovery sync every 60 seconds
         setInterval(async () => {
           if (!this.channelManager) return;
-          await this.syncAllBotChannels();
+          await this.syncAllBotChannels(false);
         }, 60000);
       }
 
@@ -305,7 +309,7 @@ export class DiscordBot {
    * Discovers or creates Discord channels and initial control embeds for all registered bots
    * across this node and all remote worker nodes.
    */
-  public async syncAllBotChannels(): Promise<void> {
+  public async syncAllBotChannels(isStartup: boolean = false): Promise<void> {
     if (!this.channelManager) return;
 
     // 0. Auto-load all registered node categories from Supabase
@@ -324,7 +328,7 @@ export class DiscordBot {
     for (const bot of allBots) {
       this.hookBotEvents(bot);
       if (bot.getState() === ConnectionState.CONNECTED) {
-        await this.setupBotChannel(bot);
+        await this.setupBotChannel(bot, isStartup);
       }
     }
 
@@ -366,7 +370,11 @@ export class DiscordBot {
         const channel = await this.channelManager.getOrCreateBotChannel(botData, targetCategory);
         if (channel) {
           this.botChannels.set(accountId, channel);
-          await DiscordControlEmbed.postOrUpdateEmbed(botData, channel);
+          if (isStartup) {
+            await DiscordControlEmbed.clearChannelAndPostNewEmbed(botData, channel);
+          } else {
+            await DiscordControlEmbed.postOrUpdateEmbed(botData, channel);
+          }
         }
       }
     } catch (err: any) {
@@ -374,7 +382,7 @@ export class DiscordBot {
     }
   }
 
-  private async setupBotChannel(bot: BedrockBot): Promise<void> {
+  private async setupBotChannel(bot: BedrockBot, isStartup: boolean = false): Promise<void> {
     if (!this.channelManager) return;
     this.hookBotEvents(bot);
 
@@ -387,7 +395,11 @@ export class DiscordBot {
     if (!channel) return;
 
     this.botChannels.set(bot.accountId, channel);
-    await DiscordControlEmbed.postOrUpdateEmbed(bot, channel);
+    if (isStartup) {
+      await DiscordControlEmbed.clearChannelAndPostNewEmbed(bot, channel);
+    } else {
+      await DiscordControlEmbed.postOrUpdateEmbed(bot, channel);
+    }
   }
 
   private hookBotEvents(bot: BedrockBot): void {
@@ -396,12 +408,12 @@ export class DiscordBot {
 
     bot.on('stateChanged', async (newState: string) => {
       if (newState === ConnectionState.CONNECTED) {
-        // Bot connected and is now online! Create/get channel now
+        // Bot connected and is now online! Create/get channel now and clear old msgs for a fresh embed
         if (this.channelManager) {
           const ch = await this.channelManager.getOrCreateBotChannel(bot);
           if (ch) {
             this.botChannels.set(bot.accountId, ch);
-            await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
+            await DiscordControlEmbed.clearChannelAndPostNewEmbed(bot, ch);
           }
         }
       } else {
@@ -470,6 +482,94 @@ export class DiscordBot {
         }
       }
     } catch {}
+  }
+
+  /**
+   * Sweeps all bot categories to delete any extra channels not belonging to any valid bot,
+   * as well as any duplicate channels.
+   */
+  public async sweepExtraCategoryChannels(): Promise<void> {
+    if (!this.channelManager) return;
+    try {
+      const allAccounts = await getAllAccounts().catch(() => []);
+
+      // 1. Gather all active categories to sweep:
+      const categoriesToSweep: Map<string, Array<{ id: string; gamertag?: string; ign?: string }>> = new Map();
+
+      // Master Category:
+      const masterCatId =
+        this.appConfig?.discord.nodeBotCategoryId ||
+        process.env.NODE_DISCORD_BOT_CATEGORY_ID ||
+        this.appConfig?.discord.botCategoryId ||
+        process.env.DISCORD_BOT_CATEGORY_ID ||
+        '';
+
+      if (masterCatId) {
+        const masterBots: Array<{ id: string; gamertag?: string; ign?: string }> = [];
+        const seenIds = new Set<string>();
+
+        // Local bots on Master
+        for (const bot of this.manager.getAllBots()) {
+          masterBots.push({
+            id: bot.accountId,
+            gamertag: bot.xboxUsername,
+            ign: bot.inGameIgn,
+          });
+          seenIds.add(bot.accountId.toLowerCase());
+        }
+
+        // Remote bots assigned to Master
+        for (const acc of allAccounts) {
+          const nid = (acc.node_id || '').toLowerCase();
+          if (
+            (!nid || nid === 'node-1' || nid === 'master' || nid === this.appConfig?.nodeId?.toLowerCase()) &&
+            !seenIds.has(acc.id.toLowerCase())
+          ) {
+            masterBots.push({
+              id: acc.id,
+              gamertag: acc.gamertag,
+              ign: acc.ign,
+            });
+            seenIds.add(acc.id.toLowerCase());
+          }
+        }
+        categoriesToSweep.set(masterCatId, masterBots);
+      }
+
+      // Worker Categories:
+      for (const [nodeId, catId] of this.nodeCategories.entries()) {
+        if (!catId || categoriesToSweep.has(catId)) continue;
+        const workerBots: Array<{ id: string; gamertag?: string; ign?: string }> = [];
+        const targetNodeLower = nodeId.toLowerCase();
+        const numOnly = targetNodeLower.replace(/\D+/g, '');
+
+        for (const acc of allAccounts) {
+          const nid = (acc.node_id || '').toLowerCase();
+          if (
+            nid === targetNodeLower ||
+            (numOnly && nid === `node-${numOnly}`) ||
+            (numOnly && nid === numOnly)
+          ) {
+            workerBots.push({
+              id: acc.id,
+              gamertag: acc.gamertag,
+              ign: acc.ign,
+            });
+          }
+        }
+        categoriesToSweep.set(catId, workerBots);
+      }
+
+      // 2. Perform the sweep on each category:
+      for (const [catId, validBots] of categoriesToSweep.entries()) {
+        const purged = await this.channelManager.purgeExtraChannels(catId, validBots);
+        if (purged > 0) {
+          logger.info(`Category sweep: purged ${purged} extra/duplicate channel(s) from category [${catId}]`);
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Error sweeping category channels: ${err?.message || err}`);
+    }
   }
 
   public async broadcastDashboardLink(publicUrl: string): Promise<void> {
