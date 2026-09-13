@@ -15,13 +15,13 @@ export class AFKSpotTracker {
   private isConnectedCallback: (() => boolean) | null = null;
 
   private checkIntervalMs: number = 300000; // 5 minutes default
-  private toleranceBlocks: number = 3.0; // 3.0 blocks tolerance default
+  private toleranceBlocks: number = 10.0; // 10.0 blocks tolerance range per user requirement
 
   constructor(
     botName: string,
     nodeId: string,
     checkIntervalMs: number = 300000,
-    toleranceBlocks: number = 3.0
+    toleranceBlocks: number = 10.0
   ) {
     this.botName = botName;
     this.nodeId = nodeId;

@@ -365,11 +365,6 @@ export class ActionController {
     const heldItem = this.getHeldItem ? this.getHeldItem() : null;
     const hotbarSlot = this.getHotbarSlot ? this.getHotbarSlot() : 0;
 
-    if (!ActionController.hasValidItem(heldItem)) {
-      logger.warn('Throw Item requested but hand is empty.', this.accountId);
-      return false;
-    }
-
     const formattedItem = {
       network_id: typeof heldItem?.network_id === 'number' ? heldItem.network_id : (typeof heldItem?.id === 'number' ? heldItem.id : 0),
       count: heldItem?.count || 1,
@@ -379,6 +374,21 @@ export class ActionController {
       extra: heldItem?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
     };
 
+    let sent = false;
+
+    // 1. Primary: player_action drop_item (standard Bedrock drop)
+    try {
+      client.queue('player_action', {
+        runtime_entity_id: runtimeId,
+        action: 'drop_item',
+        position: { x: 0, y: 0, z: 0 },
+        result_position: { x: 0, y: 0, z: 0 },
+        face: 0,
+      });
+      sent = true;
+    } catch {}
+
+    // 2. Secondary: inventory_transaction item_release drop_item (Geyser / Paper compatible)
     try {
       client.queue('inventory_transaction', {
         transaction: {
@@ -394,12 +404,11 @@ export class ActionController {
           },
         },
       });
-      logger.info(`Threw item from hotbar slot ${hotbarSlot} (network_id: ${formattedItem.network_id}).`, this.accountId);
-      return true;
-    } catch (err) {
-      logger.debug('Failed to send throw item packet', this.accountId);
-      return false;
-    }
+      sent = true;
+    } catch {}
+
+    logger.info(`Threw item from hotbar slot ${hotbarSlot} (network_id: ${formattedItem.network_id}).`, this.accountId);
+    return sent;
   }
 
   /**
@@ -413,52 +422,69 @@ export class ActionController {
     if (!client || runtimeId == null) return false;
 
     const inv = this.getInventory ? this.getInventory() : null;
-    if (!Array.isArray(inv) || inv.length === 0) {
-      logger.warn('Throw All requested but inventory is empty.', this.accountId);
-      return false;
-    }
-
     let droppedCount = 0;
 
-    for (let slot = 0; slot < inv.length; slot++) {
-      const item = inv[slot];
-      if (!ActionController.hasValidItem(item)) continue;
-
-      const formattedItem = {
-        network_id: typeof item?.network_id === 'number' ? item.network_id : (typeof item?.id === 'number' ? item.id : 0),
-        count: item?.count || 1,
-        metadata: item?.metadata || 0,
-        has_stack_id: item?.has_stack_id ? 1 : 0,
-        block_runtime_id: item?.block_runtime_id || 0,
-        extra: item?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
-      };
-
-      // Slot mapping: 0-8 hotbar, switch to each slot before dropping
-      const hotbarSlot = slot < 9 ? slot : 0;
-
+    // Drop across all 9 hotbar slots first
+    for (let slot = 0; slot < 9; slot++) {
       try {
-        client.queue('inventory_transaction', {
-          transaction: {
-            legacy: { legacy_request_id: 0, legacy_set_item_slots: [] },
-            transaction_type: 'item_release',
-            actions: [],
-            transaction_data: {
-              action_type: 'drop_item',
-              hotbar_slot: hotbarSlot,
-              held_item: formattedItem,
-              player_pos: pos,
-              click_pos: { x: 0, y: 0, z: 0 },
-            },
-          },
+        // Select slot
+        client.queue('player_hotbar', {
+          selected_slot: slot,
+          window_id: 'inventory',
+          select_slot: true,
+        });
+
+        // Drop via player_action
+        client.queue('player_action', {
+          runtime_entity_id: runtimeId,
+          action: 'drop_item',
+          position: { x: 0, y: 0, z: 0 },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
         });
         droppedCount++;
-      } catch (err) {
-        logger.debug(`Failed to drop item in slot ${slot}`, this.accountId);
+      } catch {}
+    }
+
+    // Also iterate full inventory if available
+    if (Array.isArray(inv) && inv.length > 0) {
+      for (let slot = 0; slot < inv.length; slot++) {
+        const item = inv[slot];
+        if (!ActionController.hasValidItem(item)) continue;
+
+        const formattedItem = {
+          network_id: typeof item?.network_id === 'number' ? item.network_id : (typeof item?.id === 'number' ? item.id : 0),
+          count: item?.count || 1,
+          metadata: item?.metadata || 0,
+          has_stack_id: item?.has_stack_id ? 1 : 0,
+          block_runtime_id: item?.block_runtime_id || 0,
+          extra: item?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
+        };
+
+        const hotbarSlot = slot < 9 ? slot : 0;
+
+        try {
+          client.queue('inventory_transaction', {
+            transaction: {
+              legacy: { legacy_request_id: 0, legacy_set_item_slots: [] },
+              transaction_type: 'item_release',
+              actions: [],
+              transaction_data: {
+                action_type: 'drop_item',
+                hotbar_slot: hotbarSlot,
+                held_item: formattedItem,
+                player_pos: pos,
+                click_pos: { x: 0, y: 0, z: 0 },
+              },
+            },
+          });
+          droppedCount++;
+        } catch {}
       }
     }
 
-    logger.info(`Throw All: dropped ${droppedCount} item stack(s) from inventory.`, this.accountId);
-    return droppedCount > 0;
+    logger.info(`Throw All: dropped items across inventory and hotbar slots.`, this.accountId);
+    return true;
   }
 
   public moveForward(distanceBlocks: number): void {

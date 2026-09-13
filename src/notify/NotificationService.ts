@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { logger } from '../utils/logger';
 import { Vector3D, MathUtils } from '../utils/MathUtils';
+import { discordLogger } from '../discord/DiscordLogger';
 
 export interface PlayerDetectedPayload {
   name: string;
@@ -80,6 +81,11 @@ export class NotificationService {
 
     const fallback = `[PLAYER DETECTED] ${data.name} at ${posStr} (${data.distance.toFixed(1)}m) | Bot: ${data.accountId}`;
     await this.sendWebhook(embed, fallback, data.accountId);
+
+    // Also dispatch to Discord channels (log channel & relay)
+    try {
+      await discordLogger.logPlayerDetected(data.accountId, data.name, data.distance, posStr);
+    } catch {}
   }
 
   public async notifyContainerActivity(data: ContainerActivityPayload): Promise<void> {

@@ -6,6 +6,7 @@ import { JoinScheduler } from './JoinScheduler';
 import { TokenStorage } from '../auth/TokenStorage';
 import { logger } from '../utils/logger';
 import { NotificationService } from '../notify/NotificationService';
+import { LocationStorage } from '../storage/LocationStorage';
 import {
   getAccountsForNode,
   getAccountById,
@@ -59,6 +60,7 @@ export class AccountManager extends EventEmitter {
   public async loadAccountsFromSupabase(): Promise<void> {
     const rows = await getAccountsForNode(this.appConfig.nodeId);
     logger.info(`Found ${rows.length} account(s) in Supabase for node '${this.appConfig.nodeId}'`);
+    LocationStorage.populateFromSupabase(rows);
 
     for (const row of rows) {
       try {
@@ -157,10 +159,12 @@ export class AccountManager extends EventEmitter {
   }
 
   /**
-   * Removes an account permanently — stops the bot, clears tokens, deletes Supabase row.
+   * Removes an account permanently — stops the bot, clears tokens, deletes Supabase row,
+   * clears saved location, and signals Discord channel deletion.
    */
   public async removeAccount(accountId: string): Promise<boolean> {
     const bot = this.bots.get(accountId);
+    const xboxUsername = bot?.xboxUsername;
     this.joinScheduler.cancelJoin(accountId);
 
     if (bot) {
@@ -169,13 +173,22 @@ export class AccountManager extends EventEmitter {
     }
 
     await TokenStorage.clearTokens(accountId);
+    await LocationStorage.setAfkSpot(accountId, this.appConfig.nodeId, null);
 
-    // Only update Supabase to prevent auto-connect — do NOT delete the row
-    // so other nodes (master/workers) keep their own bot instances intact.
-    await updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: false });
+    // Permanently delete from Supabase so database row is removed
+    await deleteAccount(accountId);
 
-    this.emit('accountRemoved', accountId, bot?.xboxUsername);
-    logger.info(`Account '${accountId}' removed from this node (Supabase row preserved)`);
+    // If on worker node, send command to master node to immediately delete Discord channel
+    if (!this.appConfig.discord.isMaster) {
+      try {
+        await insertCommand('node-1', accountId, 'DELETE_DISCORD_CHANNEL', { accountId, xboxUsername });
+      } catch (err: any) {
+        logger.debug(`Could not queue DELETE_DISCORD_CHANNEL to master: ${err?.message}`);
+      }
+    }
+
+    this.emit('accountRemoved', accountId, xboxUsername);
+    logger.info(`Account '${accountId}' permanently removed and deleted from database`);
     return true;
   }
 
@@ -283,8 +296,21 @@ export class AccountManager extends EventEmitter {
     }
   }
 
-  public async disconnectAll(): Promise<void> {
-    await Promise.all(Array.from(this.bots.values()).map(b => b.disconnect()));
+  public async disconnectAll(): Promise<number> {
+    const list = Array.from(this.bots.values());
+    await Promise.all(list.map(b => b.disconnect()));
+    return list.length;
+  }
+
+  public connectAll(): number {
+    let count = 0;
+    for (const [id, bot] of this.bots.entries()) {
+      if (bot.getState() !== ConnectionState.CONNECTED && bot.getState() !== ConnectionState.CONNECTING) {
+        this.scheduleAccountConnect(id);
+        count++;
+      }
+    }
+    return count;
   }
 
   // ─── Status Push to Supabase ─────────────────────────────────────────────────
@@ -458,6 +484,10 @@ export class AccountManager extends EventEmitter {
 
       case 'REMOVE_ACCOUNT':
         if (account_id) await this.removeAccount(account_id);
+        break;
+
+      case 'DELETE_DISCORD_CHANNEL':
+        this.emit('accountRemoved', account_id, payload?.xboxUsername);
         break;
 
       case 'SIGNOUT':

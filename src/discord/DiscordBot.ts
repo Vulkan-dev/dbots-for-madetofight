@@ -64,6 +64,8 @@ export class DiscordBot {
 
       // Initialize channel manager if category ID configured
       const categoryId =
+        this.appConfig?.discord.nodeBotCategoryId ||
+        process.env.NODE_DISCORD_BOT_CATEGORY_ID ||
         this.appConfig?.discord.botCategoryId ||
         process.env.DISCORD_BOT_CATEGORY_ID ||
         '';
@@ -356,6 +358,8 @@ export class DiscordBot {
 
       if (this.client.isReady() && !this.channelManager) {
         const categoryId =
+          this.appConfig?.discord.nodeBotCategoryId ||
+          process.env.NODE_DISCORD_BOT_CATEGORY_ID ||
           this.appConfig?.discord.botCategoryId ||
           process.env.DISCORD_BOT_CATEGORY_ID ||
           '';

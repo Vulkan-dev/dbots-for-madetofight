@@ -128,7 +128,7 @@ export class BedrockBot extends EventEmitter {
       this.accountId,
       this.appConfig.nodeId,
       appConfig.afk.checkIntervalMs ?? 300000,
-      appConfig.afk.locationTolerance ?? 3.0
+      appConfig.afk.locationTolerance ?? 10.0
     );
     this.autoRespawn = new AutoRespawn(this.accountId);
 
@@ -409,18 +409,24 @@ export class BedrockBot extends EventEmitter {
       }
     });
 
-    this.playerHitResponse.setCrouchCallback((isSneaking) => {
+    let userPreHitCrouch = false;
+    this.playerHitResponse.setCrouchCallback((isSneaking: boolean, isCompleted?: boolean) => {
+      if (isSneaking && !isCompleted) {
+        userPreHitCrouch = this.actionController.isCrouching;
+      }
+      const finalState = isCompleted ? userPreHitCrouch : isSneaking;
+
       // 1. Synchronize with KeepAliveEngine so 20Hz player_auth_input contains sneak flags
       if (this.keepAliveEngine) {
-        this.keepAliveEngine.setSneak(isSneaking);
+        this.keepAliveEngine.setSneak(finalState);
       }
-      this.actionController.isCrouching = isSneaking;
+      this.actionController.isCrouching = finalState;
 
       if (this.client && this.state === ConnectionState.CONNECTED && this.runtimeEntityId != null) {
         try {
           this.client.queue('player_action', {
             runtime_entity_id: this.runtimeEntityId,
-            action: isSneaking ? 'start_sneak' : 'stop_sneak',
+            action: finalState ? 'start_sneak' : 'stop_sneak',
             position: { x: 0, y: 0, z: 0 },
             result_position: { x: 0, y: 0, z: 0 },
             face: 0,
@@ -434,7 +440,7 @@ export class BedrockBot extends EventEmitter {
             motion_x: 0,
             motion_z: 0,
             jumping: false,
-            sneaking: isSneaking,
+            sneaking: finalState,
           });
         } catch (err) {
           logger.debug('Failed to send player_input sneak packet', this.accountId);
@@ -926,43 +932,40 @@ export class BedrockBot extends EventEmitter {
     this.client.on('entity_event', handleEntityEvent);
 
     // 4. Server-initiated respawn packet handshake.
-    // Only send CLIENT_READY_TO_SPAWN (state 2) when server sends READY_TO_SPAWN (state 1),
-    // NOT unconditionally on every respawn packet.
     this.client.on('respawn', (packet: any) => {
       const state = packet.state;
       logger.debug(`Server sent respawn packet (state: ${state}).`, this.accountId);
 
       if (packet.position) {
         this.currentPosition = {
-          x: packet.position.x || this.currentPosition.x,
-          y: packet.position.y || this.currentPosition.y,
-          z: packet.position.z || this.currentPosition.z,
+          x: packet.position.x ?? this.currentPosition.x,
+          y: packet.position.y ?? this.currentPosition.y,
+          z: packet.position.z ?? this.currentPosition.z,
         };
         if (this.keepAliveEngine) {
           this.keepAliveEngine.updatePosition(this.currentPosition);
         }
       }
 
-      const isReadyToSpawn = state === 1 || state === 'ready_to_spawn' || state === 'server_ready_to_spawn';
-      if (!isReadyToSpawn) {
-        return;
-      }
+      const isReadyToSpawn = state === 1 || state === 'ready_to_spawn' || state === 'server_ready_to_spawn' || state === 0 || state === 'searching_for_spawn';
 
-      logger.debug('Server is ready to spawn — sending client confirmation.', this.accountId);
-      this.lastHealth = 20;
-      this.autoRespawn.reset();
-      try {
-        this.client?.queue('respawn', {
-          position: this.currentPosition,
-          state: 2, // CLIENT_READY_TO_SPAWN
-          runtime_entity_id: this.runtimeEntityId,
-        });
-      } catch (err) {
-        logger.debug('Failed to send respawn acknowledgment packet', this.accountId);
+      if (isReadyToSpawn || this.autoRespawn.getIsDead()) {
+        logger.info(`Acknowledging server respawn (state: ${state}) with CLIENT_READY_TO_SPAWN (2)...`, this.accountId);
+        this.lastHealth = 20;
+        this.autoRespawn.reset();
+        try {
+          this.client?.queue('respawn', {
+            position: this.currentPosition,
+            state: 2, // CLIENT_READY_TO_SPAWN
+            runtime_entity_id: this.runtimeEntityId,
+          });
+        } catch (err) {
+          logger.debug('Failed to send respawn acknowledgment packet', this.accountId);
+        }
+      } else if (state === 2 || state === 'client_ready_to_spawn') {
+        this.lastHealth = 20;
+        this.autoRespawn.reset();
       }
-
-      // AFK spot drift is only enforced by the periodic 5-minute check (AFKSpotTracker) —
-      // intentionally NOT checking/going home instantly right after a respawn.
     });
 
     this.client.on('inventory_content', (packet: any) => {

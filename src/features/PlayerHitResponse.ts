@@ -6,7 +6,7 @@ export class PlayerHitResponse {
   private crouchCount: number;
   private cooldownMs: number;
   private lastTriggered: number = 0;
-  private crouchCallback: ((isSneaking: boolean) => void) | null = null;
+  private crouchCallback: ((isSneaking: boolean, isCompleted?: boolean) => void) | null = null;
   private lookCallback: ((deltaPitch: number, deltaYaw: number) => void) | null = null;
 
   constructor(
@@ -21,7 +21,7 @@ export class PlayerHitResponse {
     this.cooldownMs = cooldownMs;
   }
 
-  public setCrouchCallback(callback: (isSneaking: boolean) => void): void {
+  public setCrouchCallback(callback: (isSneaking: boolean, isCompleted?: boolean) => void): void {
     this.crouchCallback = callback;
   }
 
@@ -59,14 +59,14 @@ export class PlayerHitResponse {
       await this.delay(150);
     }
 
-    // 2. Perform crouch 2 times
+    // 2. Perform crouch response pulses
     if (this.crouchCallback) {
       for (let i = 0; i < this.crouchCount; i++) {
         // Crouch ON
-        this.crouchCallback(true);
+        this.crouchCallback(true, false);
         await this.delay(200);
         // Crouch OFF
-        this.crouchCallback(false);
+        this.crouchCallback(false, i === this.crouchCount - 1);
         await this.delay(200);
       }
     }

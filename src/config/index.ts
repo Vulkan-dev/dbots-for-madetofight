@@ -78,6 +78,7 @@ export interface AppConfig {
     isMaster: boolean;
     token: string;
     botCategoryId: string;
+    nodeBotCategoryId?: string;
     allowedUserId: string;
     logChannelId: string;
     joinLogChannelId: string;
@@ -166,6 +167,7 @@ export function loadConfig(): AppConfig {
       isMaster: optionalBool('DISCORD_MASTER', false),
       token: optionalEnv('DISCORD_TOKEN', ''),
       botCategoryId: optionalEnv('DISCORD_BOT_CATEGORY_ID', ''),
+      nodeBotCategoryId: optionalEnv('NODE_DISCORD_BOT_CATEGORY_ID', ''),
       allowedUserId: optionalEnv('DISCORD_ALLOWED_USER_ID', ''),
       logChannelId: optionalEnv('DISCORD_LOG_CHANNEL_ID', ''),
       joinLogChannelId: optionalEnv('DISCORD_JOIN_LOG_CHANNEL_ID', ''),
@@ -176,7 +178,7 @@ export function loadConfig(): AppConfig {
       enabled: optionalBool('AFK_ENABLED', true),
       activityIntervalMs: optionalInt('AFK_ACTIVITY_INTERVAL_MS', 5000),
       checkIntervalMs: optionalInt('AFK_CHECK_INTERVAL_MS', 300000),
-      locationTolerance: optionalFloat('AFK_LOCATION_TOLERANCE', 3.0),
+      locationTolerance: optionalFloat('AFK_LOCATION_TOLERANCE', 10.0),
     },
 
     defensiveCombat: {

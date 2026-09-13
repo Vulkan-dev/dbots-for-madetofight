@@ -12,6 +12,7 @@ import {
   getAccountById,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
+import { discordLogger } from '../discord/DiscordLogger';
 
 export class WebServer {
   private app: express.Application;
@@ -277,6 +278,45 @@ export class WebServer {
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
       try {
         await this.manager.disconnectAccount(accountId);
+        res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Connect All ──────────────────────────────────────────────────────────
+    this.app.post('/api/accounts/connect-all', (req, res) => {
+      try {
+        const scheduled = this.manager.connectAll();
+        res.json({ success: true, scheduled });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Disconnect All ───────────────────────────────────────────────────────
+    this.app.post('/api/accounts/disconnect-all', async (req, res) => {
+      try {
+        const count = await this.manager.disconnectAll();
+        res.json({ success: true, count });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Internal Discord Log Relay (Worker -> Master) ────────────────────────
+    this.app.post('/api/internal/discord-log', async (req, res) => {
+      const { type, botName, ign, serverHost, reason, message, playerName, distance, posStr } = req.body;
+      try {
+        if (type === 'join') {
+          await discordLogger.logBotJoin(botName, ign, serverHost);
+        } else if (type === 'leave') {
+          await discordLogger.logBotLeft(botName, ign, reason);
+        } else if (type === 'afk') {
+          await discordLogger.logAfkActivity(botName, message);
+        } else if (type === 'player_detected') {
+          await discordLogger.logPlayerDetected(botName, playerName, distance, posStr);
+        }
         res.json({ success: true });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
