@@ -84,10 +84,14 @@ export class ActionController {
   }
 
   /**
-   * Toggle Crouch (Sneak) with synchronized Geyser InputCache transition states
+   * Toggle Crouch (Sneak) with synchronized Geyser InputCache transition states.
+   * Default OFF; only enabled when explicitly toggled.
    */
   public toggleCrouch(enabled?: boolean): boolean {
     const targetState = enabled !== undefined ? enabled : !this.isCrouching;
+    if (this.isCrouching === targetState) {
+      return this.isCrouching;
+    }
     this.isCrouching = targetState;
 
     const client = this.getClient();
@@ -131,59 +135,23 @@ export class ActionController {
   }
 
   /**
-   * Toggle Continuous Jump
+   * Toggle Continuous Jump.
+   * Default OFF; smoothly synchronized with KeepAliveEngine jump physics.
    */
   public toggleJump(enabled?: boolean): boolean {
     const targetState = enabled !== undefined ? enabled : !this.isJumping;
+    if (this.isJumping === targetState) {
+      return this.isJumping;
+    }
     this.isJumping = targetState;
 
-    if (this.jumpInterval) {
-      clearInterval(this.jumpInterval);
-      this.jumpInterval = null;
-    }
-
     const engine = this.getKeepAliveEngine();
-
-    if (this.isJumping) {
-      this.executeSingleJump();
-      // Jump repeatedly every 750ms
-      this.jumpInterval = setInterval(() => {
-        this.executeSingleJump();
-      }, 750);
-    } else {
-      if (engine) {
-        engine.removeInputFlag('jumping');
-        engine.removeInputFlag('jump_down');
-        engine.removeInputFlag('start_jumping');
-      }
+    if (engine) {
+      engine.setJump(this.isJumping);
     }
 
     logger.info(`Jump toggle: ${this.isJumping ? 'ON' : 'OFF'}`, this.accountId);
     return this.isJumping;
-  }
-
-  private executeSingleJump(): void {
-    const client = this.getClient();
-    const runtimeId = this.getRuntimeEntityId();
-    const engine = this.getKeepAliveEngine();
-
-    if (client && runtimeId != null) {
-      try {
-        client.queue('player_action', {
-          runtime_entity_id: runtimeId,
-          action: 'jump',
-          position: { x: 0, y: 0, z: 0 },
-          result_position: { x: 0, y: 0, z: 0 },
-          face: 0,
-        });
-      } catch (err) {
-        logger.debug('Failed to send jump player_action packet', this.accountId);
-      }
-    }
-
-    if (engine) {
-      engine.triggerJump();
-    }
   }
 
   /**
@@ -191,6 +159,9 @@ export class ActionController {
    */
   public toggleRightClick(enabled?: boolean): boolean {
     const targetState = enabled !== undefined ? enabled : !this.isRightClicking;
+    if (this.isRightClicking === targetState) {
+      return this.isRightClicking;
+    }
     this.isRightClicking = targetState;
 
     if (this.rightClickInterval) {
@@ -354,7 +325,9 @@ export class ActionController {
   }
 
   /**
-   * Throw the item currently held in hand
+   * Throw the item currently held in hand.
+   * Sends vanilla player_action drop_item (always works on all Bedrock servers),
+   * plus ItemStackRequest and inventory_transaction normal drops for full stack clearing.
    */
   public throwItem(): boolean {
     const client = this.getClient();
@@ -382,9 +355,17 @@ export class ActionController {
       }
     }
 
-    if (!ActionController.hasValidItem(heldItem)) {
-      logger.debug('throwItem requested but hand and hotbar are empty.', this.accountId);
-      return false;
+    // 1. Primary: ALWAYS queue player_action drop_item (standard vanilla Bedrock Q drop)
+    try {
+      client.queue('player_action', {
+        runtime_entity_id: runtimeId,
+        action: 'drop_item',
+        position: { x: 0, y: 0, z: 0 },
+        result_position: { x: 0, y: 0, z: 0 },
+        face: 0,
+      });
+    } catch (err: any) {
+      logger.debug(`Failed to queue player_action drop: ${err?.message}`);
     }
 
     const formattedItem = {
@@ -397,23 +378,34 @@ export class ActionController {
     };
     const emptyItem = { network_id: 0 };
 
-    let sent = false;
-
-    // 1. Primary: player_action drop_item (standard Bedrock drop packet)
+    // 2. Secondary: item_stack_request drop (Modern Bedrock 1.16+ ItemStackRequest system)
     try {
-      client.queue('player_action', {
-        runtime_entity_id: runtimeId,
-        action: 'drop_item',
-        position: { x: 0, y: 0, z: 0 },
-        result_position: { x: 0, y: 0, z: 0 },
-        face: 0,
+      client.queue('item_stack_request', {
+        requests: [
+          {
+            request_id: -(Date.now() % 1000000),
+            actions: [
+              {
+                type_id: 'drop',
+                count: heldItem?.count || 1,
+                source: {
+                  slot_type: { container_id: 'hotbar_and_inventory', dynamic_container_id: undefined },
+                  slot: hotbarSlot,
+                  stack_id: heldItem?.has_stack_id ? (heldItem.stack_id || 0) : 0,
+                },
+                randomly: false,
+              },
+            ],
+            custom_names: [],
+            cause: 'chat_public',
+          },
+        ],
       });
-      sent = true;
     } catch (err: any) {
-      logger.debug(`Failed to queue player_action drop: ${err?.message}`);
+      logger.debug(`Failed to queue item_stack_request drop: ${err?.message}`);
     }
 
-    // 2. Secondary: inventory_transaction normal drop (container -> world_interaction, Geyser / Paper compatible)
+    // 3. Tertiary: inventory_transaction normal drop (container -> world_interaction, Geyser / Paper compatible)
     try {
       client.queue('inventory_transaction', {
         transaction: {
@@ -438,81 +430,34 @@ export class ActionController {
           transaction_data: undefined,
         },
       });
-      sent = true;
     } catch (err: any) {
       logger.debug(`Failed to queue inventory_transaction drop: ${err?.message}`);
     }
 
-    // 3. Tertiary: item_stack_request drop (Modern Bedrock 1.16+ ItemStackRequest system)
-    try {
-      client.queue('item_stack_request', {
-        requests: [
-          {
-            request_id: -(Date.now() % 1000000),
-            actions: [
-              {
-                type_id: 'drop',
-                count: heldItem?.count || 1,
-                source: {
-                  slot_type: { container_id: 'hotbar_and_inventory', dynamic_container_id: undefined },
-                  slot: hotbarSlot,
-                  stack_id: heldItem?.has_stack_id ? (heldItem.stack_id || 0) : 0,
-                },
-                randomly: false,
-              },
-            ],
-            custom_names: [],
-            cause: 'chat_public',
-          },
-        ],
-      });
-      sent = true;
-    } catch (err: any) {
-      logger.debug(`Failed to queue item_stack_request drop: ${err?.message}`);
-    }
-
-    logger.info(`Threw item from hotbar slot ${hotbarSlot} (${formattedItem.count}x network_id: ${formattedItem.network_id}).`, this.accountId);
-    return sent;
+    logger.info(`Threw item from hotbar slot ${hotbarSlot}.`, this.accountId);
+    return true;
   }
 
   /**
-   * Throw entire inventory — all hotbar and main inventory slots.
-   * Staggered over short intervals to avoid packet floods or anti-cheat rate-limits.
+   * Throw entire inventory — all hotbar (0..8) and main inventory (9..35) slots.
+   * Automatically cycles through all 36 slots, issuing player_action drop_item,
+   * ItemStackRequest drops, and normal inventory transaction drops staggered over short intervals.
    */
   public throwAll(): boolean {
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
     if (!client || runtimeId == null) return false;
 
-    const inv = this.getInventory ? this.getInventory() : null;
+    const inv = this.getInventory ? this.getInventory() : [];
     const emptyItem = { network_id: 0 };
 
-    // Collect all slots to drop (0..8 hotbar, 9..35 main inventory)
-    const slotsToDrop: { slot: number; isHotbar: boolean; item?: any }[] = [];
-
-    // Always scan hotbar slots 0..8
-    for (let slot = 0; slot < 9; slot++) {
-      const it = (Array.isArray(inv) && inv[slot]) ? inv[slot] : null;
-      slotsToDrop.push({ slot, isHotbar: true, item: it });
-    }
-
-    // Also scan remaining main inventory slots 9..35
-    if (Array.isArray(inv) && inv.length > 9) {
-      for (let slot = 9; slot < inv.length; slot++) {
-        const it = inv[slot];
-        if (ActionController.hasValidItem(it)) {
-          slotsToDrop.push({ slot, isHotbar: false, item: it });
-        }
-      }
-    }
-
-    // Stagger drops across short intervals (40ms apart)
-    slotsToDrop.forEach((entry, index) => {
+    // Scan all 36 inventory slots (0..8 hotbar, 9..35 main inventory)
+    const totalSlots = 36;
+    for (let slot = 0; slot < totalSlots; slot++) {
       setTimeout(() => {
         if (!this.getClient()) return;
-        const s = entry.slot;
         const currentInv = this.getInventory ? this.getInventory() : [];
-        const item = entry.item || (Array.isArray(currentInv) ? currentInv[s] : null);
+        const item = Array.isArray(currentInv) ? currentInv[slot] : null;
 
         const formattedItem = {
           network_id: typeof item?.network_id === 'number' ? item.network_id : (typeof item?.id === 'number' ? item.id : 0),
@@ -523,18 +468,21 @@ export class ActionController {
           extra: item?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
         };
 
-        if (entry.isHotbar) {
-          // 1. Select hotbar slot
+        // If hotbar slot (0..8), switch to slot, update mob_equipment, and issue player_action drop_item
+        if (slot < 9) {
           try {
             client.queue('player_hotbar', {
-              selected_slot: s,
+              selected_slot: slot,
               window_id: 'inventory',
               select_slot: true,
             });
-          } catch {}
-
-          // 2. Drop via player_action
-          try {
+            client.queue('mob_equipment', {
+              runtime_entity_id: runtimeId,
+              item: formattedItem,
+              slot: slot,
+              selected_slot: slot,
+              window_id: 0,
+            });
             client.queue('player_action', {
               runtime_entity_id: runtimeId,
               action: 'drop_item',
@@ -545,7 +493,32 @@ export class ActionController {
           } catch {}
         }
 
-        // 3. Drop via inventory_transaction normal (container -> world)
+        // Drop via item_stack_request (full count stack drop)
+        try {
+          client.queue('item_stack_request', {
+            requests: [
+              {
+                request_id: -(Date.now() % 1000000) - slot,
+                actions: [
+                  {
+                    type_id: 'drop',
+                    count: item?.count || 64,
+                    source: {
+                      slot_type: { container_id: 'hotbar_and_inventory', dynamic_container_id: undefined },
+                      slot: slot,
+                      stack_id: item?.has_stack_id ? (item.stack_id || 0) : 0,
+                    },
+                    randomly: false,
+                  },
+                ],
+                custom_names: [],
+                cause: 'chat_public',
+              },
+            ],
+          });
+        } catch {}
+
+        // Drop via inventory_transaction normal (container -> world)
         try {
           client.queue('inventory_transaction', {
             transaction: {
@@ -555,7 +528,7 @@ export class ActionController {
                 {
                   source_type: 'container',
                   inventory_id: 'inventory',
-                  slot: s,
+                  slot: slot,
                   old_item: formattedItem,
                   new_item: emptyItem,
                 },
@@ -571,35 +544,10 @@ export class ActionController {
             },
           });
         } catch {}
+      }, slot * 40);
+    }
 
-        // 4. Drop via item_stack_request
-        try {
-          client.queue('item_stack_request', {
-            requests: [
-              {
-                request_id: -(Date.now() % 1000000) - index,
-                actions: [
-                  {
-                    type_id: 'drop',
-                    count: item?.count || 1,
-                    source: {
-                      slot_type: { container_id: 'hotbar_and_inventory', dynamic_container_id: undefined },
-                      slot: s,
-                      stack_id: item?.has_stack_id ? (item.stack_id || 0) : 0,
-                    },
-                    randomly: false,
-                  },
-                ],
-                custom_names: [],
-                cause: 'chat_public',
-              },
-            ],
-          });
-        } catch {}
-      }, index * 40);
-    });
-
-    logger.info(`Throw All: initiated staggered item drops across ${slotsToDrop.length} inventory slots.`, this.accountId);
+    logger.info(`Throw All: initiated staggered inventory drop across all 36 slots.`, this.accountId);
     return true;
   }
 
@@ -653,6 +601,9 @@ export class ActionController {
    */
   public toggleLeftClick(enabled?: boolean): boolean {
     const targetState = enabled !== undefined ? enabled : !this.isLeftClicking;
+    if (this.isLeftClicking === targetState) {
+      return this.isLeftClicking;
+    }
     this.isLeftClicking = targetState;
 
     if (this.isLeftClicking) {
@@ -711,6 +662,9 @@ export class ActionController {
     }
 
     const targetState = enabled !== undefined ? enabled : !this.isSpamClicking;
+    if (this.isSpamClicking === targetState && this.spamClickTimeout) {
+      return this.isSpamClicking;
+    }
     this.isSpamClicking = targetState;
 
     if (this.spamClickTimeout) {
@@ -770,5 +724,31 @@ export class ActionController {
     this.isLeftClicking = false;
     this.isRightClicking = false;
     this.isSpamClicking = false;
+  }
+
+  /**
+   * Completely reset all actions and physics engine inputs to safe defaults
+   */
+  public resetAllStates(): void {
+    this.stopAll();
+    const engine = this.getKeepAliveEngine();
+    if (engine) {
+      engine.setSneak(false);
+      engine.setJump(false);
+      engine.clearInputFlags();
+    }
+    const client = this.getClient();
+    const runtimeId = this.getRuntimeEntityId();
+    if (client && runtimeId != null) {
+      try {
+        client.queue('player_action', {
+          runtime_entity_id: runtimeId,
+          action: 'stop_sneak',
+          position: { x: 0, y: 0, z: 0 },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
+        });
+      } catch {}
+    }
   }
 }

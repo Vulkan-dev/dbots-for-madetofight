@@ -102,16 +102,22 @@ export class KeepAliveEngine {
     this.inputFlags.clear();
     this.isSneakingState = false;
     this.stopSneakTicks = 0;
+    this.isContinuousJump = false;
+    this.jumpTicksRemaining = 0;
+    this.jumpCooldownTicks = 0;
     this.itemUseTicksRemaining = 0;
   }
 
   private isSneakingState: boolean = false;
   private stopSneakTicks: number = 0;
 
+  public isContinuousJump: boolean = false;
+  private jumpCooldownTicks: number = 0;
+
   /**
-   * Toggles sneak state with proper Geyser / Bedrock transition flags:
-   * Keeps sneaking, sneak_down, change_height, and start_sneaking active while crouching,
-   * and pulses stop_sneaking for 5 ticks on release.
+   * Toggles sneak state with proper Geyser / Bedrock transition flags.
+   * Keeps sneaking and sneak_down active while crouching.
+   * change_height is sent ONLY on the transition tick to eliminate server bounding-box lag.
    */
   public setSneak(enabled: boolean): void {
     if (this.isSneakingState === enabled) return;
@@ -119,19 +125,51 @@ export class KeepAliveEngine {
     if (enabled) {
       this.stopSneakTicks = 0;
     } else {
-      this.stopSneakTicks = 5; // pulse stop_sneaking for 5 ticks
+      this.stopSneakTicks = 3; // pulse stop_sneaking for 3 ticks
     }
   }
 
   /**
-   * Triggers a realistic client-side jump arc (~8 ticks / 400ms).
-   * Calculates delta.y and updates position.y each tick so server/anticheat registers movement.
+   * Toggles continuous jump state.
+   */
+  public setJump(enabled: boolean): void {
+    this.isContinuousJump = enabled;
+    if (enabled) {
+      if (this.jumpTicksRemaining <= 0) {
+        this.triggerJump();
+      }
+    } else {
+      this.jumpTicksRemaining = 0;
+      this.jumpCooldownTicks = 0;
+      this.removeInputFlag('jumping');
+      this.removeInputFlag('jump_down');
+      this.removeInputFlag('start_jumping');
+      this.removeInputFlag('jump_current_raw');
+    }
+  }
+
+  /**
+   * Triggers a realistic client-side jump arc (10 ticks / 500ms).
+   * Calculates delta.y and updates position.y each tick with exact displacement matching.
    */
   public triggerJump(): void {
     if (this.jumpTicksRemaining <= 0) {
       this.jumpBaseY = this.position.y;
+      this.jumpTicksRemaining = 10;
+      this.jumpCooldownTicks = 0;
+
+      if (this.client) {
+        try {
+          this.client.queue('player_action', {
+            runtime_entity_id: 1n,
+            action: 'jump',
+            position: { x: 0, y: 0, z: 0 },
+            result_position: { x: 0, y: 0, z: 0 },
+            face: 0,
+          });
+        } catch {}
+      }
     }
-    this.jumpTicksRemaining = 8;
   }
 
   /**
@@ -289,32 +327,46 @@ export class KeepAliveEngine {
         deltaY = 0;
       }
 
-      // Process Jump Physics Arc
+      // Process Jump Physics Arc (10 ticks ~ 500ms jump arc matching Minecraft jump velocity curve)
       if (this.jumpTicksRemaining > 0) {
         currentFlags.add('jumping');
         currentFlags.add('jump_down');
-        if (this.jumpTicksRemaining === 8) {
+        currentFlags.add('jump_current_raw');
+
+        // First tick of jump
+        if (this.jumpTicksRemaining === 10) {
           currentFlags.add('start_jumping');
+          currentFlags.add('jump_pressed_raw');
         }
 
-        // Physics trajectory across 8 ticks (400ms)
-        if (this.jumpTicksRemaining >= 6) {
-          deltaY = 0.42;
-          this.position.y += 0.35;
-        } else if (this.jumpTicksRemaining >= 4) {
-          deltaY = 0.1;
-          this.position.y += 0.1;
-        } else if (this.jumpTicksRemaining >= 2) {
-          deltaY = -0.25;
-          this.position.y -= 0.2;
-        } else {
-          deltaY = -0.27;
-          this.position.y = this.jumpBaseY;
-        }
+        const tick = 11 - this.jumpTicksRemaining; // 1 to 10
+        let newY = this.jumpBaseY;
+        if (tick === 1) newY = this.jumpBaseY + 0.35;
+        else if (tick === 2) newY = this.jumpBaseY + 0.60;
+        else if (tick === 3) newY = this.jumpBaseY + 0.75;
+        else if (tick === 4) newY = this.jumpBaseY + 0.82;
+        else if (tick === 5) newY = this.jumpBaseY + 0.82; // Apex
+        else if (tick === 6) newY = this.jumpBaseY + 0.75;
+        else if (tick === 7) newY = this.jumpBaseY + 0.60;
+        else if (tick === 8) newY = this.jumpBaseY + 0.38;
+        else if (tick === 9) newY = this.jumpBaseY + 0.15;
+        else newY = this.jumpBaseY; // Landing
+
+        deltaY = Number((newY - this.position.y).toFixed(4));
+        this.position.y = newY;
 
         this.jumpTicksRemaining--;
         if (this.jumpTicksRemaining === 0) {
           this.position.y = this.jumpBaseY;
+          deltaY = 0;
+          currentFlags.add('jump_released_raw');
+          currentFlags.add('vertical_collision');
+          this.jumpCooldownTicks = 2; // 100ms pause on ground before next jump
+        }
+      } else if (this.jumpCooldownTicks > 0) {
+        this.jumpCooldownTicks--;
+        if (this.jumpCooldownTicks === 0 && this.isContinuousJump) {
+          this.triggerJump(); // Continuously chain next jump
         }
       }
 
@@ -347,13 +399,18 @@ export class KeepAliveEngine {
         currentFlags.add('sneaking');
         currentFlags.add('sneak_down');
         currentFlags.add('sneak_current_raw');
-        currentFlags.add('change_height');
-        // Only send start_sneaking on the transition tick, NOT every tick (prevents toggle spam)
+        // Only send start_sneaking, change_height, and sneak_pressed_raw on the initial transition tick (eliminates lag)
         if (!this.lastSneakingState) {
           currentFlags.add('start_sneaking');
+          currentFlags.add('change_height');
+          currentFlags.add('sneak_pressed_raw');
         }
       } else if (this.stopSneakTicks > 0) {
         currentFlags.add('stop_sneaking');
+        if (this.stopSneakTicks === 3) {
+          currentFlags.add('change_height');
+          currentFlags.add('sneak_released_raw');
+        }
         this.stopSneakTicks--;
       }
 

@@ -762,6 +762,9 @@ export class BedrockBot extends EventEmitter {
         this.keepAliveEngine.start();
       }
 
+      // Ensure action controller toggles and physics inputs are cleanly reset on world spawn
+      this.actionController.resetAllStates();
+
       // If a saved AFK spot exists in location.js, restore and enforce 5-minute AFK monitoring
       try {
         const { LocationStorage } = require('../storage/LocationStorage');
@@ -937,7 +940,13 @@ export class BedrockBot extends EventEmitter {
     });
 
     this.client.on('inventory_content', (packet: any) => {
-      const isPlayerInv = packet.window_id === 'inventory' || packet.window_id === 0 || packet.window_id === '0';
+      const isPlayerInv =
+        packet.window_id === 'inventory' ||
+        packet.window_id === 0 ||
+        packet.window_id === '0' ||
+        packet.window_id === 119 ||
+        packet.window_id === '119' ||
+        (Array.isArray(packet.input) && packet.input.length >= 36);
       if (isPlayerInv && Array.isArray(packet.input)) {
         this.inventory = packet.input;
         if (this.inventory[this.selectedSlot]) {
@@ -967,7 +976,12 @@ export class BedrockBot extends EventEmitter {
     });
 
     this.client.on('inventory_slot', (packet: any) => {
-      const isPlayerInv = packet.window_id === 'inventory' || packet.window_id === 0 || packet.window_id === '0';
+      const isPlayerInv =
+        packet.window_id === 'inventory' ||
+        packet.window_id === 0 ||
+        packet.window_id === '0' ||
+        packet.window_id === 119 ||
+        packet.window_id === '119';
       if (isPlayerInv) {
         if (this.inventory && packet.slot != null && packet.item != null) {
           this.inventory[packet.slot] = packet.item;
@@ -1276,7 +1290,7 @@ export class BedrockBot extends EventEmitter {
     this.afkManager.stop();
     this.afkSpotTracker.deactivateAfkMode(false);
     this.autoRespawn.cancel();
-    this.actionController.stopAll();
+    this.actionController.resetAllStates();
     this.playerMonitor.clear();
     this.containerMonitor.clear();
     this.defensiveCombat.clearTarget();
