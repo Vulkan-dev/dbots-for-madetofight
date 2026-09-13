@@ -152,18 +152,11 @@ export async function saveAuthToken(accountId: string, nodeId: string, fileName:
   }, { onConflict: 'account_id' });
 }
 
-export async function loadAuthToken(accountId: string): Promise<{ file_name: string; token_data: string; node_id?: string } | null> {
+export async function loadAuthToken(accountId: string): Promise<{ file_name: string; token_data: string } | null> {
   const client = getSupabaseClient();
-  const { data, error } = await client.from('auth_tokens').select('account_id,node_id,file_name,token_data,updated_at').eq('account_id', accountId).maybeSingle();
+  const { data, error } = await client.from('auth_tokens').select('file_name,token_data').eq('account_id', accountId).maybeSingle();
   if (error) logger.debug(`loadAuthToken [${accountId}]: ${error.message}`);
   return data || null;
-}
-
-export async function getAllAuthTokens(): Promise<any[]> {
-  const client = getSupabaseClient();
-  const { data, error } = await client.from('auth_tokens').select('account_id,node_id,file_name,token_data,updated_at');
-  if (error) logger.debug(`getAllAuthTokens: ${error.message}`);
-  return data || [];
 }
 
 export async function deleteAuthToken(accountId: string): Promise<void> {

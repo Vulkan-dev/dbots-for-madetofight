@@ -164,40 +164,6 @@ export class AccountManager extends EventEmitter {
   }
 
   /**
-   * Reloads an account after token import or configuration update.
-   */
-  public async reloadAccount(accountId: string): Promise<BedrockBot | null> {
-    const trimId = accountId.trim();
-    let bot = this.bots.get(trimId);
-    if (bot) {
-      await TokenStorage.ensureProfilesFolder(trimId);
-      try {
-        (bot.authManager as any).initSavedIdentityFromCache?.();
-        (bot.authManager as any).authflow = null;
-      } catch {}
-      logger.info(`Reloaded account credentials for '${trimId}'`, trimId);
-      return bot;
-    }
-
-    // Account not yet loaded into this node's memory — load from Supabase if assigned to this node
-    const row = await getAccountById(trimId);
-    if (row && (row.node_id === this.appConfig.nodeId || !row.node_id)) {
-      const accConfig: AccountConfig = {
-        id: trimId,
-        email: row.email || '',
-        nodeId: this.appConfig.nodeId,
-        autoConnect: false,
-        offline: Boolean(row.offline_mode),
-        profilesFolder: '',
-      };
-      bot = await this.instantiateBot(accConfig);
-      logger.info(`Loaded account '${trimId}' into memory on ${this.appConfig.nodeId}`, trimId);
-      return bot;
-    }
-    return null;
-  }
-
-  /**
    * Removes an account permanently — stops the bot, clears tokens, deletes Supabase row,
    * clears saved location, and signals Discord channel deletion.
    */

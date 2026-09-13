@@ -16,7 +16,6 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  AttachmentBuilder,
 } from 'discord.js';
 import { AccountManager } from '../network/AccountManager';
 import { BedrockBot, ConnectionState } from '../network/BedrockBot';
@@ -27,7 +26,6 @@ import { PermissionStorage } from '../storage/PermissionStorage';
 import { IgnoreListStorage } from '../storage/IgnoreListStorage';
 import { AppConfig } from '../config';
 import { logger } from '../utils/logger';
-import { TokenStorage } from '../auth/TokenStorage';
 import {
   getAccountById,
   getAllAccounts,
@@ -1281,29 +1279,6 @@ export class DiscordBot {
       } else {
         await message.reply(`Bot **${targetId}** not found.`);
       }
-      return;
-    }
-
-    // Command: ,export <botId> or ,exporttokens [botId]
-    if (commandOrBot === 'export' || commandOrBot === 'exporttokens' || commandOrBot === 'tokens') {
-      if (!this.isCallerAuthorized(message.author.id, message.member)) {
-        await message.reply('You do not have permission to export tokens.');
-        return;
-      }
-      const targetId = args[0]?.trim();
-      const exportData = await TokenStorage.exportTokens(targetId);
-      if (!exportData.accounts || exportData.accounts.length === 0) {
-        await message.reply(`No cached auth tokens found${targetId ? ` for bot **${targetId}**` : ''}.`);
-        return;
-      }
-      const buffer = Buffer.from(JSON.stringify(exportData, null, 2), 'utf8');
-      const attachment = new AttachmentBuilder(buffer, {
-        name: targetId ? `bot-${targetId}-tokens.json` : `donut-bots-tokens.json`,
-      });
-      await message.reply({
-        content: `📦 Exported tokens for **${exportData.accounts.length}** account(s). Keep this file secure!`,
-        files: [attachment],
-      });
       return;
     }
 
