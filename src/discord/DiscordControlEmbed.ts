@@ -171,16 +171,14 @@ export class DiscordControlEmbed {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(!isAfkActive);
 
+    const isCrouching = (bot as any).actionController?.isCrouching !== undefined
+      ? Boolean((bot as any).actionController.isCrouching)
+      : Boolean((bot as any).actionStates?.isCrouching || (bot as any).isCrouching);
+
     const crouchBtn = new ButtonBuilder()
       .setCustomId(`btn_crouch_${accountId}`)
-      .setLabel('Toggle Crouch')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!isOnline);
-
-    const dropBtn = new ButtonBuilder()
-      .setCustomId(`btn_drop_${accountId}`)
-      .setLabel('Drop Items')
-      .setStyle(ButtonStyle.Secondary)
+      .setLabel(isCrouching ? 'Crouch (ON)' : 'Toggle Crouch')
+      .setStyle(isCrouching ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(!isOnline);
 
     const retryProfileBtn = new ButtonBuilder()
@@ -200,8 +198,7 @@ export class DiscordControlEmbed {
     const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
       setAfkBtn,
       unafkBtn,
-      crouchBtn,
-      dropBtn
+      crouchBtn
     );
     rows.push(row2);
 

@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger';
+import { sanitizeErrorMessage } from '../utils/ErrorSanitizer';
 
 export class Watchdog {
   private accountId: string;

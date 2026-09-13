@@ -17,6 +17,24 @@ import {
   getAllNodes,
 } from './database/SupabaseClient';
 
+import { sanitizeErrorMessage } from './utils/ErrorSanitizer';
+
+// Intercept raw console.error calls from third-party libraries (e.g. bedrock-protocol client/auth.js)
+// to prevent massive raw HTML dumps from Azure WAF 403 pages
+const origConsoleError = console.error;
+console.error = function (...args: any[]) {
+  const sanitizedArgs = args.map((arg) => {
+    if (typeof arg === 'string' && (arg.includes('<!DOCTYPE') || arg.includes('The request is blocked'))) {
+      return sanitizeErrorMessage(arg);
+    }
+    if (arg instanceof Error && (arg.message.includes('<!DOCTYPE') || arg.message.includes('The request is blocked'))) {
+      return sanitizeErrorMessage(arg.message);
+    }
+    return arg;
+  });
+  origConsoleError.apply(console, sanitizedArgs);
+};
+
 // ── Global error guards ──────────────────────────────────────────────────────
 process.on('uncaughtException', (err: any) => {
   const msg = err?.message || err?.toString() || '';
@@ -24,11 +42,20 @@ process.on('uncaughtException', (err: any) => {
     logger.debug(`Suppressed non-fatal library exception: ${msg}`);
     return;
   }
-  logger.error('Uncaught exception', undefined, err);
+  logger.error(`Uncaught exception: ${sanitizeErrorMessage(err)}`);
 });
 
 process.on('unhandledRejection', (reason: any) => {
-  logger.error('Unhandled promise rejection', undefined, reason);
+  const cleanMsg = sanitizeErrorMessage(reason);
+  if (
+    cleanMsg.includes('Azure WAF') ||
+    cleanMsg.includes('The request is blocked') ||
+    cleanMsg.includes('Multiple network operations failed')
+  ) {
+    logger.debug(`Handled async rejection from network rate limit: ${cleanMsg}`);
+    return;
+  }
+  logger.error(`Unhandled promise rejection: ${cleanMsg}`);
 });
 
 // ── Main ─────────────────────────────────────────────────────────────────────

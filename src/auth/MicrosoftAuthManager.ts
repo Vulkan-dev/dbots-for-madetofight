@@ -96,6 +96,7 @@ export class MicrosoftAuthManager extends EventEmitter {
 
       if (!fs.existsSync(resolvedPath)) return;
 
+      TokenStorage.sanitizeDirectory(resolvedPath);
       const files = fs.readdirSync(resolvedPath);
       // Check bed cache for cached profile data
       const bedFile = files.find((f) => f.endsWith('_bed-cache.json'));

@@ -19,6 +19,7 @@ import { ActionController } from '../features/ActionController';
 import { discordLogger } from '../discord/DiscordLogger';
 import { Watchdog } from './Watchdog';
 import { KeepAliveEngine } from './KeepAliveEngine';
+import { sanitizeErrorMessage, isAzureWafBlock } from '../utils/ErrorSanitizer';
 
 export enum ConnectionState {
   DISCONNECTED = 'DISCONNECTED',
@@ -76,6 +77,11 @@ export class BedrockBot extends EventEmitter {
   public lastHealth: number = 20;
   public shiftedToRdp: string | null = null;
   private connectionTimeoutTimer: NodeJS.Timeout | null = null;
+  private reconnectScheduler?: (task: () => Promise<void>) => boolean;
+
+  public setReconnectScheduler(scheduler: (task: () => Promise<void>) => boolean): void {
+    this.reconnectScheduler = scheduler;
+  }
 
   constructor(
     accountConfig: AccountConfig,
@@ -411,11 +417,25 @@ export class BedrockBot extends EventEmitter {
 
 
 
-    // Watchdog auto-reconnect handler: Always attempts reconnection regardless of disconnect reason
+    // Watchdog auto-reconnect handler: Staggers reconnection through JoinScheduler to prevent auth rate-limits
     this.watchdog.setReconnectCallback(async () => {
-      logger.info('Watchdog reconnect callback invoked. Re-establishing Bedrock connection...', this.accountId);
-      this.setState(ConnectionState.RECONNECTING);
-      await this.connect();
+      if (this.reconnectScheduler) {
+        logger.info('Queuing watchdog reconnection via JoinScheduler to prevent auth rate-limits...', this.accountId);
+        this.setState(ConnectionState.RECONNECTING);
+        this.reconnectScheduler(async () => {
+          if (
+            this.state === ConnectionState.RECONNECTING ||
+            this.state === ConnectionState.DISCONNECTED ||
+            this.state === ConnectionState.AUTH_FAILED
+          ) {
+            await this.connect();
+          }
+        });
+      } else {
+        logger.info('Watchdog reconnect callback invoked. Re-establishing Bedrock connection...', this.accountId);
+        this.setState(ConnectionState.RECONNECTING);
+        await this.connect();
+      }
     });
   }
 
@@ -1079,19 +1099,20 @@ export class BedrockBot extends EventEmitter {
     });
 
     this.client.on('error', (err: any) => {
-      const errMessage = err?.message || err?.toString() || 'Protocol Error';
+      const rawMessage = err?.message || err?.toString() || 'Protocol Error';
       // Suppress non-fatal deserialization / unparseable packet errors so they never trigger disconnects
       if (
-        errMessage.includes('Read error') ||
-        errMessage.includes('Invalid tag') ||
-        errMessage.includes('Deserialization') ||
-        errMessage.includes('PartialReadError')
+        rawMessage.includes('Read error') ||
+        rawMessage.includes('Invalid tag') ||
+        rawMessage.includes('Deserialization') ||
+        rawMessage.includes('PartialReadError')
       ) {
-        logger.debug(`Ignored non-fatal protocol read/deserialization error: ${errMessage}`, this.accountId);
+        logger.debug(`Ignored non-fatal protocol read/deserialization error: ${rawMessage}`, this.accountId);
         return;
       }
-      logger.error('Socket / protocol error encountered', this.accountId, err);
-      this.handleConnectionFailure(errMessage);
+      const cleanMessage = sanitizeErrorMessage(err);
+      logger.error(`Socket / protocol error encountered: ${cleanMessage}`, this.accountId);
+      this.handleConnectionFailure(cleanMessage);
     });
 
     this.client.on('close', () => {
@@ -1114,13 +1135,9 @@ export class BedrockBot extends EventEmitter {
     }
 
     // Normalize and clean up reason string for user-facing logs
-    let cleanReason = (reason || '').trim();
+    let cleanReason = sanitizeErrorMessage(reason);
     if (!cleanReason || cleanReason.toLowerCase() === 'unknown' || cleanReason === 'undefined') {
       cleanReason = 'Connection lost / Server kick';
-    } else if (cleanReason === 'Server disconnect packet received') {
-      cleanReason = 'Server closed connection / Proxy kick';
-    } else if (cleanReason === 'Socket closed') {
-      cleanReason = 'Socket closed by remote server';
     }
 
     // Log leave event to Discord DISCORD_LEFT_LOG_CHANNEL_ID
@@ -1237,16 +1254,31 @@ export class BedrockBot extends EventEmitter {
       logger.warn(`Auto-shift failed for '${this.accountId}'. Falling back to reconnect...`, this.accountId);
     }
 
+    const isWaf = isAzureWafBlock(cleanReason);
+    if (isWaf) {
+      // Azure WAF IP rate limit: back off by 3-5 minutes (180s-300s) with account jitter
+      // so all bots don't slam the Microsoft endpoint at the exact same moment
+      const numericId = parseInt(this.accountId.replace(/\D/g, ''), 10) || 1;
+      const jitterMs = (numericId % 10) * 15000;
+      const wafBackoffMs = Math.min(300000, 180000 + jitterMs);
+      minDelayMs = Math.max(minDelayMs || 0, wafBackoffMs);
+      logger.warn(
+        `Azure WAF rate-limit detected for account [${this.accountId}]. Backing off reconnect for ${Math.round(minDelayMs / 1000)}s to allow IP block to clear.`,
+        this.accountId
+      );
+    }
+
     const isAuthError =
-      reason.includes('401') ||
-      reason.includes('403') ||
-      reason.includes('Forbidden') ||
-      reason.includes('UNAUTHORIZED') ||
-      reason.includes('invalid_grant');
+      cleanReason.includes('401') ||
+      cleanReason.includes('403') ||
+      cleanReason.includes('Forbidden') ||
+      cleanReason.includes('UNAUTHORIZED') ||
+      cleanReason.includes('invalid_grant') ||
+      isWaf;
 
     if (isAuthError) {
-      this.authErrorMessage = `Authentication issue (${reason.slice(0, 100)}). Will attempt reconnect with stored tokens.`;
-      logger.warn(`Authentication issue noticed: ${reason}. Retrying connection using session tokens in ./profile/${this.accountId}...`, this.accountId);
+      this.authErrorMessage = `Authentication issue (${cleanReason.slice(0, 100)}). Will attempt reconnect with stored tokens.`;
+      logger.warn(`Authentication issue noticed: ${cleanReason}. Retrying connection using session tokens in ./profile/${this.accountId}...`, this.accountId);
       this.setState(ConnectionState.AUTH_FAILED);
     } else {
       this.setState(ConnectionState.DISCONNECTED);
@@ -1262,7 +1294,7 @@ export class BedrockBot extends EventEmitter {
     }
 
     // Reconnect on ALL kicks / disconnects / errors after configured time
-    this.watchdog.handleDisconnect(reason, minDelayMs);
+    this.watchdog.handleDisconnect(cleanReason, minDelayMs);
   }
 
   public clearAuthToken(): void {
@@ -1270,7 +1302,7 @@ export class BedrockBot extends EventEmitter {
     if (this.authManager) {
       this.authManager.clearCache();
     } else {
-      TokenStorage.clearTokens(`./profile/${this.accountId}`);
+      TokenStorage.clearTokens(this.accountId);
     }
     this.authErrorMessage = null;
     this.msaCodeData = null;

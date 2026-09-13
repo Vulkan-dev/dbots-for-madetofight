@@ -92,6 +92,11 @@ export class AccountManager extends EventEmitter {
     const bot = new BedrockBot(accountConfig, this.appConfig, this.notificationService);
     this.bots.set(accountConfig.id, bot);
 
+    // Stagger watchdog reconnect attempts through JoinScheduler to prevent concurrent Microsoft auth rate-limits
+    bot.setReconnectScheduler((task: () => Promise<void>) => {
+      return this.joinScheduler.scheduleJoin(bot.accountId, task);
+    });
+
     // After any successful auth, sync new token to Supabase
     bot.on('authenticated', () => {
       TokenStorage.syncToSupabase(accountConfig.id, this.appConfig.nodeId).catch(() => {});
@@ -603,8 +608,6 @@ export class AccountManager extends EventEmitter {
         case 'toggle_left_click':  res = ctrl.toggleLeftClick(state); break;
         case 'toggle_right_click': res = ctrl.toggleRightClick(state); break;
         case 'throw_pearl':        res = ctrl.throwPearl(); break;
-        case 'throw_item':         res = ctrl.throwItem(); break;
-        case 'throw_all':          res = ctrl.throwAll(); break;
         case 'toggle_spam_click':  res = ctrl.toggleSpamClick(state, options?.minDelay, options?.maxDelay); break;
         case 'look_up':    ctrl.look('up',    options?.degrees ?? 15); res = true; break;
         case 'look_down':  ctrl.look('down',  options?.degrees ?? 15); res = true; break;
@@ -617,12 +620,6 @@ export class AccountManager extends EventEmitter {
 
     if (action === 'throw_pearl' && results.every(r => r.state === false)) {
       return { success: false, error: 'No ender pearl found in hotbar (slots 1-9).', result: results };
-    }
-    if (action === 'throw_item' && results.every(r => r.state === false)) {
-      return { success: false, error: 'Hand is empty — nothing to throw.', result: results };
-    }
-    if (action === 'throw_all' && results.every(r => r.state === false)) {
-      return { success: false, error: 'Inventory is empty — nothing to throw.', result: results };
     }
     return { success: true, result: results };
   }
