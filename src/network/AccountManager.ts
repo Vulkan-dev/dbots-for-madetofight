@@ -436,6 +436,16 @@ export class AccountManager extends EventEmitter {
         if (account_id) await this.disconnectAccount(account_id);
         break;
 
+      case 'CONNECT_ALL':
+        logger.info(`Received CONNECT_ALL command for node '${this.appConfig.nodeId}'`);
+        this.connectAll();
+        break;
+
+      case 'DISCONNECT_ALL':
+        logger.info(`Received DISCONNECT_ALL command for node '${this.appConfig.nodeId}'`);
+        await this.disconnectAll();
+        break;
+
       case 'CHAT':
         if (account_id && payload.message) this.sendBotChat(account_id, payload.message);
         break;
