@@ -278,6 +278,8 @@ export class AccountManager extends EventEmitter {
   public scheduleAccountConnect(accountId: string): boolean {
     const bot = this.bots.get(accountId);
     if (!bot) { logger.warn(`Cannot connect '${accountId}': not registered`); return false; }
+    bot.autoConnect = true;
+    updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: true }).catch(() => {});
     const state = bot.getState();
     if (state === ConnectionState.CONNECTED) return false;
     // If stuck in CONNECTING from a timed-out join, force disconnect first
@@ -291,14 +293,21 @@ export class AccountManager extends EventEmitter {
   public async disconnectAccount(accountId: string): Promise<void> {
     const bot = this.bots.get(accountId);
     if (bot) {
+      this.joinScheduler.cancelJoin(accountId);
+      bot.autoConnect = false;
       await bot.disconnect();
-      await updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: false });
+      await updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: false }).catch(() => {});
     }
   }
 
   public async disconnectAll(): Promise<number> {
     const list = Array.from(this.bots.values());
-    await Promise.all(list.map(b => b.disconnect()));
+    for (const b of list) {
+      this.joinScheduler.cancelJoin(b.accountId);
+      b.autoConnect = false;
+      await b.disconnect();
+      await updateAccountFields(b.accountId, { node_id: this.appConfig.nodeId, auto_connect: false }).catch(() => {});
+    }
     return list.length;
   }
 
@@ -306,6 +315,8 @@ export class AccountManager extends EventEmitter {
     let count = 0;
     for (const [id, bot] of this.bots.entries()) {
       if (bot.getState() !== ConnectionState.CONNECTED && bot.getState() !== ConnectionState.CONNECTING) {
+        bot.autoConnect = true;
+        updateAccountFields(id, { node_id: this.appConfig.nodeId, auto_connect: true }).catch(() => {});
         this.scheduleAccountConnect(id);
         count++;
       }
@@ -338,11 +349,11 @@ export class AccountManager extends EventEmitter {
             id: row.id,
             email: row.email || '',
             nodeId: this.appConfig.nodeId,
-            autoConnect: row.auto_connect ?? true,
+            autoConnect: row.auto_connect === true,
             offline: row.offline_mode ?? false,
             profilesFolder: '',
           });
-          if (row.auto_connect !== false) {
+          if (row.auto_connect === true) {
             this.scheduleAccountConnect(row.id);
           }
         }
@@ -419,7 +430,9 @@ export class AccountManager extends EventEmitter {
 
   private async executeCommand(cmd: { action: string; account_id?: string; payload: any }): Promise<void> {
     const { action, account_id, payload = {} } = cmd;
-    logger.info(`Executing command: ${action}${account_id ? ` [${account_id}]` : ''}`);
+    if (action !== 'DISCORD_LOG') {
+      logger.info(`Executing command: ${action}${account_id ? ` [${account_id}]` : ''}`);
+    }
 
     switch (action) {
       case 'LOAD_AND_CONNECT':

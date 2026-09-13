@@ -81,11 +81,17 @@ export class DiscordBot {
         this.channelManager = new DiscordChannelManager(this.client, categoryId, allowedUserId);
         await this.syncAllBotChannels();
 
-        // Periodic embed update and remote worker bot discovery every 30 seconds
+        // 3rd: Periodic Discord embed refresh every 5 minutes (300,000 ms)
+        setInterval(async () => {
+          if (!this.channelManager) return;
+          await this.refreshAllEmbeds();
+        }, 300000);
+
+        // Periodic bot channel discovery sync every 60 seconds
         setInterval(async () => {
           if (!this.channelManager) return;
           await this.syncAllBotChannels();
-        }, 30000);
+        }, 60000);
       }
 
       // Register Slash Commands with Discord Application API
@@ -230,7 +236,10 @@ export class DiscordBot {
         ),
       new SlashCommandBuilder()
         .setName('list')
-        .setDescription('List all Minecraft bots and their status'),
+        .setDescription('List Minecraft bots across nodes or for a specific node')
+        .addStringOption((opt) =>
+          opt.setName('node').setDescription('Node ID or number (e.g. 2 or node-2)').setRequired(false)
+        ),
       new SlashCommandBuilder()
         .setName('dashboard')
         .setDescription('Get the Vercel frontend dashboard URL'),
@@ -269,7 +278,7 @@ export class DiscordBot {
       }
     }
 
-    if (nodeId === this.appConfig?.nodeId || nodeId === 'node-1') {
+    if (nodeId === this.appConfig?.nodeId || nodeId === 'node-1' || nodeId.toLowerCase() === 'master') {
       const selfCat =
         this.appConfig?.discord.nodeBotCategoryId ||
         process.env.NODE_DISCORD_BOT_CATEGORY_ID ||
@@ -279,11 +288,10 @@ export class DiscordBot {
       if (selfCat) return selfCat;
     }
 
-    return (
-      this.appConfig?.discord.botCategoryId ||
-      process.env.DISCORD_BOT_CATEGORY_ID ||
-      ''
-    );
+    // Do NOT fall back to Master's category for other nodes!
+    // If a worker node has not configured or announced a category, return '' so its bots
+    // are never mistakenly placed into Master's or another node's category.
+    return '';
   }
 
   public async registerNodeCategory(nodeId: string, categoryId: string): Promise<void> {
@@ -311,10 +319,13 @@ export class DiscordBot {
       }
     } catch {}
 
-    // 1. Local bots on this Master node
+    // 1. Local bots on this Master node - only create channels for CONNECTED bots
     const allBots = this.manager.getAllBots();
     for (const bot of allBots) {
-      await this.setupBotChannel(bot);
+      this.hookBotEvents(bot);
+      if (bot.getState() === ConnectionState.CONNECTED) {
+        await this.setupBotChannel(bot);
+      }
     }
 
     // 2. Discover and sync all bots across all remote worker nodes from Supabase
@@ -324,6 +335,12 @@ export class DiscordBot {
         const accountId = acc.id;
         // Skip if already managed locally as a live BedrockBot
         if (this.manager.getBot(accountId)) continue;
+
+        const isOnline = acc.status === 'CONNECTED' || acc.status === 'online';
+        // 3rd: Only make channel after the bot connected to the server and is online!
+        if (!isOnline && !this.botChannels.has(accountId)) {
+          continue;
+        }
 
         const targetCategory = this.resolveCategoryForNode(acc.node_id);
         if (!targetCategory) continue;
@@ -359,64 +376,100 @@ export class DiscordBot {
 
   private async setupBotChannel(bot: BedrockBot): Promise<void> {
     if (!this.channelManager) return;
+    this.hookBotEvents(bot);
+
+    // 3rd: Only make channel after the bot connected to the server and is online!
+    if (bot.getState() !== ConnectionState.CONNECTED && !this.botChannels.has(bot.accountId)) {
+      return;
+    }
 
     const channel = await this.channelManager.getOrCreateBotChannel(bot);
     if (!channel) return;
 
     this.botChannels.set(bot.accountId, channel);
-
-    // Initial embed post or edit
     await DiscordControlEmbed.postOrUpdateEmbed(bot, channel);
+  }
 
-    // Hook bot events once to update the control embed
-    if (!this.hookedBotIds.has(bot.accountId)) {
-      this.hookedBotIds.add(bot.accountId);
+  private hookBotEvents(bot: BedrockBot): void {
+    if (this.hookedBotIds.has(bot.accountId)) return;
+    this.hookedBotIds.add(bot.accountId);
 
-      bot.on('stateChanged', async () => {
-        let ch = this.botChannels.get(bot.accountId);
-        if (!ch && this.channelManager) {
-          const fetched = await this.channelManager.getOrCreateBotChannel(bot);
-          if (fetched) {
-            this.botChannels.set(bot.accountId, fetched);
-            ch = fetched;
-          }
-        }
-        if (ch) {
-          DiscordControlEmbed.queueEmbedUpdate(bot, ch);
-        }
-      });
-
-      bot.on('positionChanged', () => {
-        const ch = this.botChannels.get(bot.accountId);
-        if (ch) DiscordControlEmbed.queueEmbedUpdate(bot, ch);
-      });
-
-      bot.on('profileReady', async () => {
+    bot.on('stateChanged', async (newState: string) => {
+      if (newState === ConnectionState.CONNECTED) {
+        // Bot connected and is now online! Create/get channel now
         if (this.channelManager) {
           const ch = await this.channelManager.getOrCreateBotChannel(bot);
           if (ch) {
             this.botChannels.set(bot.accountId, ch);
-            DiscordControlEmbed.queueEmbedUpdate(bot, ch);
+            await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
           }
         }
-      });
+      } else {
+        // If channel already exists, update embed to reflect state change
+        const ch = this.botChannels.get(bot.accountId);
+        if (ch) {
+          await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
+        }
+      }
+    });
 
-      if (bot.authManager) {
-        bot.authManager.on('statusChanged', async () => {
-          let ch = this.botChannels.get(bot.accountId);
-          if (!ch && this.channelManager) {
-            const fetched = await this.channelManager.getOrCreateBotChannel(bot);
-            if (fetched) {
-              this.botChannels.set(bot.accountId, fetched);
-              ch = fetched;
-            }
-          }
-          if (ch) {
-            DiscordControlEmbed.queueEmbedUpdate(bot, ch);
-          }
-        });
+    bot.on('profileReady', async () => {
+      if (this.channelManager && (bot.getState() === ConnectionState.CONNECTED || this.botChannels.has(bot.accountId))) {
+        const ch = await this.channelManager.getOrCreateBotChannel(bot);
+        if (ch) {
+          this.botChannels.set(bot.accountId, ch);
+          await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
+        }
+      }
+    });
+  }
+
+  /**
+   * Refreshes all active control embeds every 5 minutes without channel creation overhead.
+   */
+  public async refreshAllEmbeds(): Promise<void> {
+    if (!this.channelManager) return;
+
+    // 1. Local connected bots
+    for (const bot of this.manager.getAllBots()) {
+      if (bot.getState() === ConnectionState.CONNECTED) {
+        const ch = this.botChannels.get(bot.accountId);
+        if (ch) {
+          await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
+        }
       }
     }
+
+    // 2. Remote connected bots from Supabase
+    try {
+      const allAccounts = await getAllAccounts();
+      for (const acc of allAccounts) {
+        if (this.manager.getBot(acc.id)) continue;
+        const isOnline = acc.status === 'CONNECTED' || acc.status === 'online';
+        if (!isOnline) continue;
+        const ch = this.botChannels.get(acc.id);
+        if (ch) {
+          const botData = {
+            accountId: acc.id,
+            xboxUsername: acc.gamertag,
+            gamertag: acc.gamertag,
+            inGameIgn: acc.ign,
+            ign: acc.ign,
+            status: acc.status,
+            pos_x: acc.pos_x,
+            pos_y: acc.pos_y,
+            pos_z: acc.pos_z,
+            auth_status: acc.auth_status,
+            auth_error: acc.auth_error,
+            msa_code: acc.msa_code,
+            msa_url: acc.msa_url,
+            afk_spot_active: acc.afk_spot_active,
+            node_id: acc.node_id,
+          };
+          await DiscordControlEmbed.postOrUpdateEmbed(botData, ch);
+        }
+      }
+    } catch {}
   }
 
   public async broadcastDashboardLink(publicUrl: string): Promise<void> {
@@ -894,7 +947,8 @@ export class DiscordBot {
         }
       }
     } else if (commandName === 'list') {
-      const embed = this.buildBotListEmbed();
+      const nodeFilter = interaction.options.getString('node') || undefined;
+      const embed = await this.buildBotListEmbed(nodeFilter);
       await interaction.reply({ embeds: [embed] });
     } else if (commandName === 'dashboard' || commandName === 'link') {
       const publicUrl = this.appConfig?.webServer?.frontendUrl;
@@ -1062,9 +1116,10 @@ export class DiscordBot {
       return;
     }
 
-    // Command: /list or ,list
+    // Command: /list or ,list [node-id]
     if (commandOrBot === 'list') {
-      const embed = this.buildBotListEmbed();
+      const nodeFilter = args[0]?.trim();
+      const embed = await this.buildBotListEmbed(nodeFilter);
       await message.reply({ embeds: [embed] });
       return;
     }
@@ -1167,28 +1222,88 @@ export class DiscordBot {
       .setTimestamp();
   }
 
-  public buildBotListEmbed(): EmbedBuilder {
-    const localBots = this.manager.getAllBots();
+  public async buildBotListEmbed(filterNode?: string): Promise<EmbedBuilder> {
     const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
+    const allAccounts = await getAllAccounts().catch(() => []);
 
-    const lines: string[] = [];
-    for (const bot of localBots) {
-      const xboxOrId = bot.xboxUsername || bot.accountId;
-      const ign = bot.inGameIgn || `${floodgatePrefix}${xboxOrId}`;
-      const stateEmoji = bot.getState() === ConnectionState.CONNECTED ? '🟢' : '🔴';
-      lines.push(`${stateEmoji} **${bot.accountId}** — \`${ign}\``);
+    if (filterNode && filterNode.trim()) {
+      const raw = filterNode.trim().toLowerCase();
+      const numOnly = raw.replace(/\D+/g, '');
+      const targetNodeId = raw.startsWith('node-') ? raw : (raw === 'master' ? 'node-1' : (numOnly ? `node-${numOnly}` : raw));
+
+      const accountsForNode = allAccounts.filter((a: any) => {
+        const nid = (a.node_id || '').toLowerCase();
+        return (
+          nid === targetNodeId ||
+          nid === raw ||
+          (numOnly && nid === `node-${numOnly}`) ||
+          (targetNodeId === 'node-1' && (!nid || nid === 'master' || nid === 'node-1'))
+        );
+      });
+
+      const lines: string[] = [];
+      for (const a of accountsForNode) {
+        const isOnline = a.status === 'CONNECTED' || a.status === 'online';
+        const stateEmoji = isOnline ? '🟢' : '🔴';
+        const gamerTag = a.gamertag || a.id;
+        const ign = a.ign || `${floodgatePrefix}${gamerTag}`;
+        const loc = (a.pos_x != null && isOnline) ? ` (${Math.round(a.pos_x)}, ${Math.round(a.pos_y)}, ${Math.round(a.pos_z)})` : '';
+        lines.push(`${stateEmoji} **#${a.id}** — \`${ign}\`${loc}`);
+      }
+
+      const onlineCount = accountsForNode.filter((a: any) => a.status === 'CONNECTED' || a.status === 'online').length;
+
+      return new EmbedBuilder()
+        .setTitle(`🤖 Bots on ${targetNodeId.toUpperCase()}`)
+        .setColor(0x3b82f6)
+        .setDescription(
+          lines.length > 0
+            ? `**${onlineCount}/${accountsForNode.length}** bots online\n\n` + lines.join('\n')
+            : `*No bots found assigned to ${targetNodeId}.*`
+        )
+        .setFooter({ text: 'Use ,list <node-id> (e.g. ,list 2) to filter by node.' })
+        .setTimestamp();
     }
 
-    return new EmbedBuilder()
-      .setTitle('🤖 Bot Status — This Node')
+    // Default overview when no node filter is provided
+    const nodeMap: Map<string, any[]> = new Map();
+    for (const a of allAccounts) {
+      const nid = (a.node_id || 'unassigned').toLowerCase();
+      if (!nodeMap.has(nid)) nodeMap.set(nid, []);
+      nodeMap.get(nid)!.push(a);
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('🤖 Bot Network Overview')
       .setColor(0x3b82f6)
       .setDescription(
-        lines.length > 0
-          ? lines.join('\n')
-          : '*No bots loaded on this node.*'
+        `Total: **${allAccounts.length}** bots across **${nodeMap.size}** node(s)\nTip: Type \`,list <node-id>\` (e.g. \`,list 2\`) to view specific node bots.`
       )
-      .setFooter({ text: 'For all nodes, check the Vercel dashboard.' })
       .setTimestamp();
+
+    if (nodeMap.size === 0) {
+      embed.setDescription('*No bots registered in the system.*');
+      return embed;
+    }
+
+    for (const [nid, botList] of nodeMap.entries()) {
+      const onlineCount = botList.filter((b: any) => b.status === 'CONNECTED' || b.status === 'online').length;
+      const preview = botList.slice(0, 8).map((b: any) => {
+        const isOnline = b.status === 'CONNECTED' || b.status === 'online';
+        const tag = b.gamertag || b.id;
+        const ign = b.ign || `${floodgatePrefix}${tag}`;
+        return `${isOnline ? '🟢' : '🔴'} **#${b.id}** (\`${ign}\`)`;
+      }).join('\n');
+      const more = botList.length > 8 ? `\n*...and ${botList.length - 8} more (use ,list ${nid.replace('node-', '')})*` : '';
+
+      embed.addFields({
+        name: `${nid.toUpperCase()} (${onlineCount}/${botList.length} online)`,
+        value: preview + more || '*No bots*',
+        inline: false,
+      });
+    }
+
+    return embed;
   }
 
   /**

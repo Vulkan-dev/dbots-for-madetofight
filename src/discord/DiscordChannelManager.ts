@@ -87,19 +87,30 @@ export class DiscordChannelManager {
 
       const expectedChannelName = this.getChannelNameForBot(bot);
 
-      // Find all channels matching this bot
-      const matchingChannels = guild.channels.cache.filter(
-        (ch) =>
-          ch &&
-          ch.type === ChannelType.GuildText &&
-          (ch.parentId === effectiveCategoryId || (((ch as TextChannel).topic && (ch as TextChannel).topic?.includes(`[${accountId}]`)))) &&
-          (((ch as TextChannel).topic && (ch as TextChannel).topic?.includes(`[${accountId}]`)) ||
-            ch.name === expectedChannelName ||
-            ch.name === `bot-${accountId.toLowerCase()}` ||
-            ch.name === accountId.toLowerCase() ||
-            (xboxUsername && ch.name === xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')) ||
-            (xboxUsername && ch.name === `bot-${xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')}`))
-      );
+      // Find all channels matching this bot strictly to prevent merging or conflicting with other bots/nodes
+      const matchingChannels = guild.channels.cache.filter((ch) => {
+        if (!ch || ch.type !== ChannelType.GuildText) return false;
+
+        const topic = (ch as TextChannel).topic || '';
+
+        // 1. Strict topic check: if the channel topic contains a bracketed account ID [xyz],
+        // it MUST match this bot's accountId. If it has another bot's accountId, it NEVER matches!
+        const topicBotIdMatch = topic.match(/\[([a-zA-Z0-9_-]+)\]/);
+        if (topicBotIdMatch) {
+          return topicBotIdMatch[1].toLowerCase() === accountId.toLowerCase();
+        }
+
+        // 2. Channels without account ID in topic: only match under effectiveCategoryId
+        if (ch.parentId !== effectiveCategoryId) return false;
+
+        return (
+          ch.name === expectedChannelName ||
+          ch.name === `bot-${accountId.toLowerCase()}` ||
+          ch.name === accountId.toLowerCase() ||
+          (xboxUsername && ch.name === xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')) ||
+          (xboxUsername && ch.name === `bot-${xboxUsername.toLowerCase().replace(/[^a-z0-9_-]/g, '')}`)
+        );
+      });
 
       if (matchingChannels.size > 0) {
         const matchingArray = Array.from(matchingChannels.values()) as TextChannel[];

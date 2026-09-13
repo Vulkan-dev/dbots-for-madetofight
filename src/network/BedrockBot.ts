@@ -434,7 +434,11 @@ export class BedrockBot extends EventEmitter {
   }
 
   public get autoConnect(): boolean {
-    return this.accountConfig.autoConnect;
+    return this.accountConfig.autoConnect ?? true;
+  }
+
+  public set autoConnect(val: boolean) {
+    this.accountConfig.autoConnect = val;
   }
 
   private setState(newState: ConnectionState): void {
@@ -1291,6 +1295,7 @@ export class BedrockBot extends EventEmitter {
 
   public async disconnect(): Promise<void> {
     logger.info('Manually disconnecting account...', this.accountId);
+    this.autoConnect = false;
     if (this.connectionTimeoutTimer) {
       clearTimeout(this.connectionTimeoutTimer);
       this.connectionTimeoutTimer = null;
