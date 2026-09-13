@@ -710,6 +710,7 @@ export class BedrockBot extends EventEmitter {
 
       logger.info(`Successfully joined Bedrock server as Xbox User '${this.xboxUsername}' (IGN: ${this.inGameIgn})!`, this.accountId);
       this.setState(ConnectionState.CONNECTED);
+      this.watchdog.onConnected();
       this.afkManager.start();
 
       // Log join event to Discord DISCORD_JOIN_LOG_CHANNEL_ID
@@ -1098,8 +1099,18 @@ export class BedrockBot extends EventEmitter {
       return;
     }
 
+    // Normalize and clean up reason string for user-facing logs
+    let cleanReason = (reason || '').trim();
+    if (!cleanReason || cleanReason.toLowerCase() === 'unknown' || cleanReason === 'undefined') {
+      cleanReason = 'Connection lost / Server kick';
+    } else if (cleanReason === 'Server disconnect packet received') {
+      cleanReason = 'Server closed connection / Proxy kick';
+    } else if (cleanReason === 'Socket closed') {
+      cleanReason = 'Socket closed by remote server';
+    }
+
     // Log leave event to Discord DISCORD_LEFT_LOG_CHANNEL_ID
-    discordLogger.logBotLeft(this.accountId, this.inGameIgn || this.xboxUsername || this.accountId, reason);
+    discordLogger.logBotLeft(this.accountId, this.inGameIgn || this.xboxUsername || this.accountId, cleanReason);
 
     // Check for fatal missing Xbox profile error
     const isMissingXboxProfile =

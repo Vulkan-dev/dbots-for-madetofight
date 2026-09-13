@@ -10,6 +10,8 @@ export class DiscordLogger {
   private leftChannelId: string;
   private cachedMasterUrl: string | null = null;
   private lastMasterUrlLookup: number = 0;
+  private lastJoinTimes: Map<string, number> = new Map();
+  private lastLeftTimes: Map<string, number> = new Map();
 
   constructor() {
     this.logChannelId = (process.env.DISCORD_LOG_CHANNEL_ID || '').trim();
@@ -95,8 +97,18 @@ export class DiscordLogger {
 
   /**
    * Logs a bot JOIN event to DISCORD_JOIN_LOG_CHANNEL_ID
+   * Debounces repeated join logs within 45 seconds to prevent spam during connection flapping.
    */
   public async logBotJoin(botName: string, ign: string, serverHost: string): Promise<void> {
+    const key = (botName || ign || 'bot').toLowerCase();
+    const now = Date.now();
+    const lastJoin = this.lastJoinTimes.get(key) || 0;
+    if (now - lastJoin < 45000) {
+      logger.debug(`Debounced duplicate Discord join log for [${key}] (last sent ${Math.round((now - lastJoin) / 1000)}s ago)`);
+      return;
+    }
+    this.lastJoinTimes.set(key, now);
+
     if (!this.client) {
       await this.relayToMaster({ type: 'join', botName, ign, serverHost });
       return;
@@ -119,10 +131,30 @@ export class DiscordLogger {
 
   /**
    * Logs a bot LEAVE event to DISCORD_LEFT_LOG_CHANNEL_ID
+   * Debounces repeated leave logs within 45 seconds to prevent spam during connection flapping.
    */
   public async logBotLeft(botName: string, ign: string, reason?: string): Promise<void> {
+    const key = (botName || ign || 'bot').toLowerCase();
+    const now = Date.now();
+    const lastLeft = this.lastLeftTimes.get(key) || 0;
+
+    let cleanReason = (reason || '').trim();
+    if (!cleanReason || cleanReason.toLowerCase() === 'unknown' || cleanReason === 'undefined') {
+      cleanReason = 'Connection lost / Server kick';
+    } else if (cleanReason === 'Server disconnect packet received') {
+      cleanReason = 'Server closed connection / Proxy kick';
+    } else if (cleanReason === 'Socket closed') {
+      cleanReason = 'Socket closed by remote server';
+    }
+
+    if (now - lastLeft < 45000) {
+      logger.debug(`Debounced duplicate Discord leave log for [${key}] (last sent ${Math.round((now - lastLeft) / 1000)}s ago)`);
+      return;
+    }
+    this.lastLeftTimes.set(key, now);
+
     if (!this.client) {
-      await this.relayToMaster({ type: 'leave', botName, ign, reason });
+      await this.relayToMaster({ type: 'leave', botName, ign, reason: cleanReason });
       return;
     }
 
@@ -132,7 +164,7 @@ export class DiscordLogger {
       .addFields(
         { name: 'Bot Name', value: botName, inline: true },
         { name: 'In-Game IGN', value: ign || botName, inline: true },
-        { name: 'Reason', value: reason || 'Disconnected', inline: false }
+        { name: 'Reason', value: cleanReason, inline: false }
       )
       .setTimestamp();
 

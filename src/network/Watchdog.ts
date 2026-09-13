@@ -7,6 +7,10 @@ export class Watchdog {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectCallback: (() => Promise<void>) | null = null;
 
+  // Progressive backoff tracking
+  private consecutiveDisconnects: number = 0;
+  private connectionStabilityTimer: NodeJS.Timeout | null = null;
+
   constructor(accountId: string, reconnectDelayMs: number = 6000) {
     this.accountId = accountId;
     this.reconnectDelayMs = reconnectDelayMs;
@@ -14,6 +18,25 @@ export class Watchdog {
 
   public setReconnectCallback(callback: () => Promise<void>): void {
     this.reconnectCallback = callback;
+  }
+
+  /**
+   * Called when bot successfully connects and joins the server.
+   * If the connection remains stable for 60 seconds, resets the consecutive disconnect counter.
+   */
+  public onConnected(): void {
+    if (this.connectionStabilityTimer) {
+      clearTimeout(this.connectionStabilityTimer);
+      this.connectionStabilityTimer = null;
+    }
+
+    this.connectionStabilityTimer = setTimeout(() => {
+      this.connectionStabilityTimer = null;
+      if (this.consecutiveDisconnects > 0) {
+        logger.debug(`Bot connection remained stable for 60s. Resetting consecutive disconnect backoff.`, this.accountId);
+        this.consecutiveDisconnects = 0;
+      }
+    }, 60000);
   }
 
   /**
@@ -25,7 +48,7 @@ export class Watchdog {
 
   /**
    * Called when a client disconnects, encounters an error, or gets kicked for ANY reason.
-   * Dynamically extends delay if the server proxy reports a ghost session ("already online").
+   * Applies progressive backoff on consecutive disconnects to prevent proxy anti-bot kick loops.
    */
   public handleDisconnect(reason?: string, minDelayMs?: number): void {
     if (this.isStopped) {
@@ -33,7 +56,17 @@ export class Watchdog {
       return;
     }
 
-    logger.warn(`Disconnect/kick detected. Reason: ${reason || 'Unknown disconnect reason'}`, this.accountId);
+    if (this.connectionStabilityTimer) {
+      clearTimeout(this.connectionStabilityTimer);
+      this.connectionStabilityTimer = null;
+    }
+
+    this.consecutiveDisconnects++;
+
+    logger.warn(
+      `Disconnect/kick detected (attempt #${this.consecutiveDisconnects}). Reason: ${reason || 'Unknown disconnect reason'}`,
+      this.accountId
+    );
 
     // Detect proxy ghost sessions
     const normalizedReason = (reason || '').toLowerCase();
@@ -42,7 +75,26 @@ export class Watchdog {
       normalizedReason.includes('already online') ||
       normalizedReason.includes('already connected');
 
-    let actualDelay = isGhostSession ? Math.max(this.reconnectDelayMs, 20000) : this.reconnectDelayMs;
+    // Progressive backoff calculation:
+    // 1st disconnect: Math.max(reconnectDelayMs, 10s)
+    // 2nd disconnect: 20s
+    // 3rd disconnect: 35s
+    // 4th+ disconnect: 60s
+    let actualDelay: number;
+    if (this.consecutiveDisconnects === 1) {
+      actualDelay = Math.max(this.reconnectDelayMs, 10000);
+    } else if (this.consecutiveDisconnects === 2) {
+      actualDelay = 20000;
+    } else if (this.consecutiveDisconnects === 3) {
+      actualDelay = 35000;
+    } else {
+      actualDelay = 60000;
+    }
+
+    if (isGhostSession) {
+      actualDelay = Math.max(actualDelay, 25000);
+    }
+
     if (typeof minDelayMs === 'number') {
       actualDelay = Math.max(actualDelay, minDelayMs);
     }
@@ -65,14 +117,14 @@ export class Watchdog {
       }
     }
 
-    logger.info(`Watchdog scheduling reconnect attempt in ${actualDelay} ms...`, this.accountId);
+    logger.info(`Watchdog scheduling reconnect attempt #${this.consecutiveDisconnects} in ${actualDelay} ms...`, this.accountId);
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.isStopped) return;
 
       try {
-        logger.info(`Watchdog executing reconnection attempt...`, this.accountId);
+        logger.info(`Watchdog executing reconnection attempt #${this.consecutiveDisconnects}...`, this.accountId);
         if (this.reconnectCallback) {
           await this.reconnectCallback();
         }
@@ -89,18 +141,28 @@ export class Watchdog {
    */
   public stop(): void {
     this.isStopped = true;
+    if (this.connectionStabilityTimer) {
+      clearTimeout(this.connectionStabilityTimer);
+      this.connectionStabilityTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.consecutiveDisconnects = 0;
     logger.info('Watchdog stopped (manual disconnect).', this.accountId);
   }
 
   public reset(): void {
+    if (this.connectionStabilityTimer) {
+      clearTimeout(this.connectionStabilityTimer);
+      this.connectionStabilityTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.consecutiveDisconnects = 0;
   }
 
   public isRunning(): boolean {

@@ -22,6 +22,8 @@ export class DiscordControlEmbed {
   private static updateDebounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private static cachedState: Record<string, StoredMessageData> | null = null;
   private static lastRenderedDigest: Map<string, string> = new Map();
+  private static inFlightUpdates: Map<string, Promise<void>> = new Map();
+  private static recoveredBots: Set<string> = new Set();
 
   private static loadState(): Record<string, StoredMessageData> {
     if (this.cachedState) {
@@ -279,105 +281,131 @@ export class DiscordControlEmbed {
   }
 
   public static async postOrUpdateEmbed(bot: BedrockBot | BotOrData, channel: TextChannel): Promise<void> {
-    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
-    const state = this.loadState();
-    let stored = state[accountId];
+    const accountId = String((bot as any).accountId || (bot as any).id || 'bot');
 
-    const embed = this.buildControlEmbed(bot);
-    const buttons = this.buildControlButtons(bot);
-
-    // Compute a lightweight content digest to skip redundant Discord API edit calls
-    const digest = `${embed.data.title || ''}|${embed.data.description || ''}|${embed.data.color || ''}|${buttons.length}`;
-
-    let targetMsg: Message | null = null;
-
-    // 1. Check existing stored message ID
-    if (stored && stored.channelId === channel.id && stored.messageId) {
-      try {
-        targetMsg =
-          channel.messages.cache.get(stored.messageId) ||
-          (await channel.messages.fetch(stored.messageId).catch(() => null));
-      } catch {
-        targetMsg = null;
-      }
+    // Prevent concurrent duplicate executions for the same bot account
+    const inFlight = this.inFlightUpdates.get(accountId);
+    if (inFlight) {
+      return inFlight;
     }
 
-    // 2. Node restart recovery: If no stored message found in local state (or state lost on restart/redeploy),
-    // scan channel messages to discover and adopt any existing control embed sent by this bot!
-    if (!targetMsg) {
-      try {
-        const recentMessages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
-        if (recentMessages) {
-          const myId = channel.client.user?.id;
-          const botEmbedMessages = recentMessages.filter(
-            (m) => m.author.id === myId && m.embeds.length > 0
-          );
-          if (botEmbedMessages.size > 0) {
-            // Sort so we adopt the newest embed message
-            const sorted = Array.from(botEmbedMessages.values()).sort(
-              (a, b) => b.createdTimestamp - a.createdTimestamp
-            );
-            targetMsg = sorted[0];
+    const updatePromise = (async () => {
+      const state = this.loadState();
+      let stored = state[accountId];
 
-            // Prune any other duplicate/orphaned bot embed messages in the channel to keep it clean
-            for (let i = 1; i < sorted.length; i++) {
-              sorted[i].delete().catch(() => {});
-            }
+      const embed = this.buildControlEmbed(bot);
+      const buttons = this.buildControlButtons(bot);
 
-            logger.info(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name} after restart`, accountId);
-            state[accountId] = {
-              channelId: channel.id,
-              messageId: targetMsg.id,
-            };
-            this.saveState(state);
-            stored = state[accountId];
+      // Compute a lightweight content digest to skip redundant Discord API edit calls
+      const digest = `${embed.data.title || ''}|${embed.data.description || ''}|${embed.data.color || ''}|${buttons.length}`;
+
+      let targetMsg: Message | null = null;
+
+      // 1. Check existing stored message ID
+      if (stored && stored.channelId === channel.id && stored.messageId) {
+        try {
+          targetMsg =
+            channel.messages.cache.get(stored.messageId) ||
+            (await channel.messages.fetch(stored.messageId).catch(() => null));
+          if (targetMsg) {
+            this.recoveredBots.add(accountId);
           }
+        } catch {
+          targetMsg = null;
         }
-      } catch (scanErr) {
-        logger.debug(`Could not scan channel for existing embed messages: ${scanErr}`);
-      }
-    }
-
-    // 3. Edit existing message in-place
-    if (targetMsg) {
-      if (this.lastRenderedDigest.get(accountId) === digest) {
-        // Content has not changed. Skip redundant Discord HTTP edit request!
-        return;
       }
 
+      // 2. Node restart recovery: If no stored message found in local state (or state lost on restart/redeploy),
+      // scan channel messages to discover and adopt any existing control embed sent by this bot!
+      if (!targetMsg) {
+        try {
+          const recentMessages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+          if (recentMessages) {
+            const myId = channel.client.user?.id;
+            const botEmbedMessages = recentMessages.filter(
+              (m) => m.author.id === myId && m.embeds.length > 0
+            );
+            if (botEmbedMessages.size > 0) {
+              // Sort so we adopt the newest embed message
+              const sorted = Array.from(botEmbedMessages.values()).sort(
+                (a, b) => b.createdTimestamp - a.createdTimestamp
+              );
+              targetMsg = sorted[0];
+
+              // Prune any other duplicate/orphaned bot embed messages in the channel to keep it clean
+              for (let i = 1; i < sorted.length; i++) {
+                sorted[i].delete().catch(() => {});
+              }
+
+              if (!this.recoveredBots.has(accountId)) {
+                this.recoveredBots.add(accountId);
+                logger.info(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name} after restart`, accountId);
+              } else {
+                logger.debug(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name}`, accountId);
+              }
+
+              state[accountId] = {
+                channelId: channel.id,
+                messageId: targetMsg.id,
+              };
+              this.saveState(state);
+              stored = state[accountId];
+            }
+          }
+        } catch (scanErr) {
+          logger.debug(`Could not scan channel for existing embed messages: ${scanErr}`);
+        }
+      }
+
+      // 3. Edit existing message in-place
+      if (targetMsg) {
+        if (this.lastRenderedDigest.get(accountId) === digest) {
+          // Content has not changed. Skip redundant Discord HTTP edit request!
+          return;
+        }
+
+        try {
+          await targetMsg.edit({
+            embeds: [embed],
+            components: buttons,
+          });
+          this.lastRenderedDigest.set(accountId, digest);
+          return;
+        } catch (err) {
+          logger.debug(`Existing control message ${targetMsg.id} could not be edited, creating new one.`, accountId);
+        }
+      }
+
+      // 4. Send fresh message only if none exists
       try {
-        await targetMsg.edit({
+        const newMsg = await channel.send({
           embeds: [embed],
           components: buttons,
         });
+
+        state[accountId] = {
+          channelId: channel.id,
+          messageId: newMsg.id,
+        };
+        this.saveState(state);
         this.lastRenderedDigest.set(accountId, digest);
-        return;
+        this.recoveredBots.add(accountId);
+        logger.info(`Posted control embed message (ID: ${newMsg.id}) in #${channel.name}`, accountId);
       } catch (err) {
-        logger.debug(`Existing control message ${targetMsg.id} could not be edited, creating new one.`, accountId);
+        logger.error(`Failed to post control embed message in channel #${channel.name}`, accountId, err);
       }
-    }
+    })();
 
-    // 4. Send fresh message only if none exists
+    this.inFlightUpdates.set(accountId, updatePromise);
     try {
-      const newMsg = await channel.send({
-        embeds: [embed],
-        components: buttons,
-      });
-
-      state[accountId] = {
-        channelId: channel.id,
-        messageId: newMsg.id,
-      };
-      this.saveState(state);
-      this.lastRenderedDigest.set(accountId, digest);
-      logger.info(`Posted control embed message (ID: ${newMsg.id}) in #${channel.name}`, accountId);
-    } catch (err) {
-      logger.error(`Failed to post control embed message in channel #${channel.name}`, accountId, err);
+      await updatePromise;
+    } finally {
+      this.inFlightUpdates.delete(accountId);
     }
   }
 
   public static queueEmbedUpdate(bot: BedrockBot | BotOrData, channel: TextChannel): void {
-    const accountId = (bot as any).accountId || (bot as any).id || 'bot';
+    const accountId = String((bot as any).accountId || (bot as any).id || 'bot');
     // If an update is already scheduled to fire, let it execute without pushing back indefinitely
     if (this.updateDebounceTimers.has(accountId)) {
       return;
@@ -395,6 +423,7 @@ export class DiscordControlEmbed {
 
   public static deleteState(accountId: string): void {
     try {
+      this.recoveredBots.delete(accountId);
       this.lastRenderedDigest.delete(accountId);
       const state = this.loadState();
       if (state[accountId]) {

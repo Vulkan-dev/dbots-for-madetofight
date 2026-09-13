@@ -408,12 +408,17 @@ export class DiscordBot {
 
     bot.on('stateChanged', async (newState: string) => {
       if (newState === ConnectionState.CONNECTED) {
-        // Bot connected and is now online! Create/get channel now and clear old msgs for a fresh embed
+        // Bot connected and is now online!
         if (this.channelManager) {
+          const channelExisted = this.botChannels.has(bot.accountId);
           const ch = await this.channelManager.getOrCreateBotChannel(bot);
           if (ch) {
             this.botChannels.set(bot.accountId, ch);
-            await DiscordControlEmbed.clearChannelAndPostNewEmbed(bot, ch);
+            if (!channelExisted) {
+              await DiscordControlEmbed.clearChannelAndPostNewEmbed(bot, ch);
+            } else {
+              await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
+            }
           }
         }
       } else {
