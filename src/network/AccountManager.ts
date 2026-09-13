@@ -430,8 +430,8 @@ export class AccountManager extends EventEmitter {
 
   private async executeCommand(cmd: { action: string; account_id?: string; payload: any }): Promise<void> {
     const { action, account_id, payload = {} } = cmd;
-    if (action !== 'DISCORD_LOG') {
-      logger.info(`Executing command: ${action}${account_id ? ` [${account_id}]` : ''}`);
+    if (action !== 'DISCORD_LOG' && action !== 'REGISTER_NODE_CATEGORY') {
+      logger.debug(`Executing command: ${action}${account_id ? ` [${account_id}]` : ''}`);
     }
 
     switch (action) {
@@ -486,9 +486,18 @@ export class AccountManager extends EventEmitter {
         if (account_id) this.toggleAfkMonitor(account_id);
         break;
 
-      case 'BOT_ACTION':
-        if (account_id && payload.action) {
-          this.executeBotAction(account_id, payload.action, payload.state, payload.options);
+      case 'BOT_ACTION': {
+        const targetId = account_id || payload?.accountId || payload?.account_id || 'all';
+        const targetAction = payload?.action;
+        if (targetAction) {
+          this.executeBotAction(targetId, targetAction, payload?.state, payload?.options);
+        }
+        break;
+      }
+
+      case 'REGISTER_NODE_CATEGORY':
+        if (payload?.nodeId && payload?.categoryId) {
+          this.emit('registerNodeCategory', payload.nodeId, payload.categoryId);
         }
         break;
 
@@ -511,13 +520,6 @@ export class AccountManager extends EventEmitter {
 
       case 'DELETE_DISCORD_CHANNEL':
         this.emit('accountRemoved', account_id, payload?.xboxUsername);
-        break;
-
-      case 'REGISTER_NODE_CATEGORY':
-        if (payload?.nodeId && payload?.categoryId) {
-          logger.info(`Received REGISTER_NODE_CATEGORY: ${payload.nodeId} -> ${payload.categoryId}`);
-          this.emit('registerNodeCategory', payload.nodeId, payload.categoryId);
-        }
         break;
 
       case 'DISCORD_LOG':

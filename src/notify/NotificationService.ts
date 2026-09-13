@@ -57,9 +57,9 @@ export class NotificationService {
         payload,
         { headers: { 'Content-Type': 'application/json' }, timeout: 5000 }
       );
-      logger.info(`Notification sent successfully to endpoint`, accountId);
+      logger.debug(`Notification sent successfully to endpoint`, accountId);
     } catch (error) {
-      logger.error(`Failed to dispatch notification webhook`, accountId, error);
+      logger.debug(`Failed to dispatch notification webhook: ${error}`, accountId);
     }
   }
 

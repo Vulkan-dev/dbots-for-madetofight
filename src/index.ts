@@ -121,7 +121,7 @@ async function main() {
             nodeId: config.nodeId,
             categoryId: nodeCatId,
           });
-          logger.info(`Announced Discord category [${nodeCatId}] for node '${config.nodeId}' to master via Supabase`);
+          logger.debug(`Announced Discord category [${nodeCatId}] for node '${config.nodeId}' to master via Supabase`);
 
           // 2. Direct HTTP call if master node URL is registered
           const nodes = await getAllNodes();
@@ -133,7 +133,7 @@ async function main() {
               { nodeId: config.nodeId, categoryId: nodeCatId },
               { timeout: 5000 }
             );
-            logger.info(`Announced Discord category [${nodeCatId}] to master via HTTP (${master.url})`);
+            logger.debug(`Announced Discord category [${nodeCatId}] to master via HTTP (${master.url})`);
           }
         } catch (err: any) {
           logger.debug(`Node category announcement: ${err?.message || err}`);

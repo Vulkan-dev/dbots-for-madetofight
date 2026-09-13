@@ -152,7 +152,7 @@ export class DiscordBot {
           try {
             await cachedChannel.delete(`Bot account ${accountId} removed`);
             deleted = true;
-            logger.info(`Deleted cached Discord channel #${cachedChannel.name} for removed bot [${accountId}]`, accountId);
+            logger.debug(`Deleted cached Discord channel #${cachedChannel.name} for removed bot [${accountId}]`, accountId);
           } catch (err) {
             logger.debug(`Could not delete cached channel for [${accountId}]: ${err}`);
           }
@@ -168,7 +168,7 @@ export class DiscordBot {
             const ch = await this.client.channels.fetch(channelId).catch(() => null);
             if (ch && typeof (ch as any).delete === 'function') {
               await (ch as any).delete(`Bot account ${accountId} removed`);
-              logger.info(`Deleted Discord channel (ID: ${channelId}) for removed bot [${accountId}]`, accountId);
+              logger.debug(`Deleted Discord channel (ID: ${channelId}) for removed bot [${accountId}]`, accountId);
             }
           } catch (err) {
             logger.debug(`Could not delete channel ID ${channelId}: ${err}`);
@@ -301,7 +301,7 @@ export class DiscordBot {
   public async registerNodeCategory(nodeId: string, categoryId: string): Promise<void> {
     if (!nodeId || !categoryId) return;
     this.nodeCategories.set(nodeId, categoryId);
-    logger.info(`Registered Discord category [${categoryId}] for node '${nodeId}'`);
+    logger.debug(`Registered Discord category [${categoryId}] for node '${nodeId}'`);
     await this.syncAllBotChannels();
   }
 
@@ -318,7 +318,7 @@ export class DiscordBot {
       for (const [nId, catId] of storedCategories.entries()) {
         if (!this.nodeCategories.has(nId)) {
           this.nodeCategories.set(nId, catId);
-          logger.info(`Loaded registered Discord category [${catId}] for node '${nId}' from Supabase`);
+          logger.debug(`Loaded registered Discord category [${catId}] for node '${nId}' from Supabase`);
         }
       }
     } catch {}
@@ -605,7 +605,7 @@ export class DiscordBot {
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(openBtn);
 
           await (ch as TextChannel).send({ embeds: [embed], components: [row] });
-          logger.info(`Broadcasted Dashboard link to Discord channel #${(ch as TextChannel).name}`);
+          logger.debug(`Broadcasted Dashboard link to Discord channel #${(ch as TextChannel).name}`);
         }
       } catch (err) {
         logger.debug(`Could not broadcast dashboard link to log channel: ${err}`);
@@ -812,12 +812,15 @@ export class DiscordBot {
           'confirmafk': 'RESET_AFK',
           'unafk': 'TOGGLE_AFK_MONITOR',
           'crouch': 'BOT_ACTION',
+          'drop': 'BOT_ACTION',
+          'throw': 'BOT_ACTION',
           'retry_profile': 'RETRY_PROFILE',
         };
         const remoteAction = actionMap[action] || action.toUpperCase();
         const payload: any = {};
         if (action === 'tpaccept') payload.message = '/tpaccept';
         if (action === 'crouch') payload.action = 'toggle_crouch';
+        if (action === 'drop' || action === 'throw') payload.action = 'throw_item';
 
         await insertCommand(accountRow.node_id, accountId, remoteAction, payload);
 
@@ -835,6 +838,8 @@ export class DiscordBot {
               axios.post(`${targetNode.url}/api/accounts/disconnect`, { accountId }, { timeout: 4000 }).catch(() => {});
             } else if (action === 'crouch') {
               axios.post(`${targetNode.url}/api/bot/action`, { accountId, action: 'toggle_crouch' }, { timeout: 4000 }).catch(() => {});
+            } else if (action === 'drop' || action === 'throw') {
+              axios.post(`${targetNode.url}/api/bot/action`, { accountId, action: 'throw_item' }, { timeout: 4000 }).catch(() => {});
             }
           }
         } catch {}
@@ -948,6 +953,16 @@ export class DiscordBot {
         const state = bot.actionController.toggleCrouch();
         await interaction.reply({
           content: `Crouch ${state ? 'ENABLED' : 'DISABLED'}.`,
+          ephemeral: true,
+        });
+      } else if (action === 'drop' || action === 'throw') {
+        if (bot.getState() !== ConnectionState.CONNECTED) {
+          await interaction.reply({ content: 'Bot must be online to drop items.', ephemeral: true });
+          return;
+        }
+        const dropped = bot.actionController.throwItem();
+        await interaction.reply({
+          content: dropped ? 'Dropped held item.' : 'No item in hand/hotbar.',
           ephemeral: true,
         });
       }
@@ -1282,15 +1297,95 @@ export class DiscordBot {
       return;
     }
 
-    // Check if command is targeting a bot e.g. ,afk1 join, ,afk1 leave, ,afk1 /tpaccept, ,afk1 afk
-    const bot = this.manager.getBot(commandOrBot);
+    // Command: /drop, ,drop, /throw, ,throw, /dropall, ,dropall, /throwall, ,throwall
+    if (commandOrBot === 'drop' || commandOrBot === 'throw' || commandOrBot === 'dropall' || commandOrBot === 'throwall') {
+      let targetBotId = args[0]?.trim();
+      if (!targetBotId) {
+        // Infer bot ID from channel topic or botChannels
+        for (const [bId, ch] of this.botChannels.entries()) {
+          if (ch.id === message.channel.id) {
+            targetBotId = bId;
+            break;
+          }
+        }
+        if (!targetBotId && (message.channel as TextChannel).topic) {
+          const match = (message.channel as TextChannel).topic?.match(/\[([a-zA-Z0-9_-]+)\]/);
+          if (match) targetBotId = match[1];
+        }
+      }
+
+      if (!targetBotId) {
+        await message.reply(`Usage: \`${prefix}${commandOrBot} <botId>\` or run inside the bot's private channel.`);
+        return;
+      }
+
+      const isAll = commandOrBot.includes('all');
+      const actionName = isAll ? 'throw_all' : 'throw_item';
+
+      const targetBot = this.manager.getBot(targetBotId);
+      if (targetBot) {
+        if (targetBot.getState() !== ConnectionState.CONNECTED) {
+          await message.reply(`Bot **${targetBotId}** is offline.`);
+          return;
+        }
+        if (isAll) {
+          const count = targetBot.actionController.throwAll();
+          await message.reply(`Dropping all items (${count} slots) for **${targetBotId}**.`);
+        } else {
+          const dropped = targetBot.actionController.throwItem();
+          await message.reply(dropped ? `Dropped held item for **${targetBotId}**.` : `No item in hand/hotbar for **${targetBotId}**.`);
+        }
+        return;
+      }
+
+      // Remote worker node bot
+      const acc = await getAccountById(targetBotId);
+      if (acc && acc.node_id && acc.node_id !== this.appConfig?.nodeId) {
+        await insertCommand(acc.node_id, targetBotId, 'BOT_ACTION', { action: actionName });
+        try {
+          const nodes = await getAllNodes();
+          const targetNode = nodes.find((n: any) => n.id === acc.node_id);
+          if (targetNode?.url) {
+            const axios = require('axios');
+            await axios.post(`${targetNode.url}/api/bot/action`, { accountId: targetBotId, action: actionName }, { timeout: 4000 }).catch(() => {});
+          }
+        } catch {}
+        await message.reply(`Dispatched drop command to node \`${acc.node_id}\` for bot **${targetBotId}**.`);
+        return;
+      }
+
+      await message.reply(`Bot **${targetBotId}** not found.`);
+      return;
+    }
+
+    // Check if command is targeting a bot e.g. ,afk1 join, ,afk1 leave, ,afk1 /tpaccept, ,afk1 afk, ,afk1 drop
+    let bot = this.manager.getBot(commandOrBot);
     if (!bot) {
+      // Check if targeting a remote bot
+      const acc = await getAccountById(commandOrBot);
+      if (acc && acc.node_id && acc.node_id !== this.appConfig?.nodeId && args.length > 0) {
+        const subCmd = args[0].toLowerCase();
+        if (subCmd === 'drop' || subCmd === 'throw' || subCmd === 'dropall' || subCmd === 'throwall') {
+          const actionName = subCmd.includes('all') ? 'throw_all' : 'throw_item';
+          await insertCommand(acc.node_id, commandOrBot, 'BOT_ACTION', { action: actionName });
+          try {
+            const nodes = await getAllNodes();
+            const targetNode = nodes.find((n: any) => n.id === acc.node_id);
+            if (targetNode?.url) {
+              const axios = require('axios');
+              await axios.post(`${targetNode.url}/api/bot/action`, { accountId: commandOrBot, action: actionName }, { timeout: 4000 }).catch(() => {});
+            }
+          } catch {}
+          await message.reply(`Dispatched drop command to node \`${acc.node_id}\` for bot **${commandOrBot}**.`);
+          return;
+        }
+      }
       logger.debug(`Discord command target '${commandOrBot}' not found.`);
       return;
     }
 
     if (args.length === 0) {
-      await message.reply(`Usage: \`${prefix}${bot.accountId} join\`, \`${prefix}${bot.accountId} leave\`, \`${prefix}${bot.accountId} afk\`, or \`${prefix}${bot.accountId} <msg/command>\``);
+      await message.reply(`Usage: \`${prefix}${bot.accountId} join\`, \`${prefix}${bot.accountId} leave\`, \`${prefix}${bot.accountId} afk\`, \`${prefix}${bot.accountId} drop\`, or \`${prefix}${bot.accountId} <msg/command>\``);
       return;
     }
 
@@ -1311,6 +1406,20 @@ export class DiscordBot {
       await message.reply(`Activated AFK spot tracking for **${bot.accountId}** (\`${displayIgn}\`). Issued /sethome 1.`);
       const ch = this.botChannels.get(bot.accountId);
       if (ch) await DiscordControlEmbed.postOrUpdateEmbed(bot, ch);
+    } else if (subCommand === 'drop' || subCommand === 'throw') {
+      if (bot.getState() !== ConnectionState.CONNECTED) {
+        await message.reply(`Bot **${bot.accountId}** is offline.`);
+        return;
+      }
+      const dropped = bot.actionController.throwItem();
+      await message.reply(dropped ? `Dropped held item for **${bot.accountId}**.` : `No item in hand/hotbar for **${bot.accountId}**.`);
+    } else if (subCommand === 'dropall' || subCommand === 'throwall') {
+      if (bot.getState() !== ConnectionState.CONNECTED) {
+        await message.reply(`Bot **${bot.accountId}** is offline.`);
+        return;
+      }
+      const count = bot.actionController.throwAll();
+      await message.reply(`Dropping all items (${count} slots) for **${bot.accountId}**.`);
     } else {
       // Treat the rest as in-game chat or command (e.g. ,afk1 /tpaccept or ,afk1 Hi)
       const chatOrCmd = args.join(' ');

@@ -359,11 +359,33 @@ export class ActionController {
   public throwItem(): boolean {
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
-    const pos = this.getPosition();
     if (!client || runtimeId == null) return false;
 
-    const heldItem = this.getHeldItem ? this.getHeldItem() : null;
-    const hotbarSlot = this.getHotbarSlot ? this.getHotbarSlot() : 0;
+    let heldItem = this.getHeldItem ? this.getHeldItem() : null;
+    let hotbarSlot = this.getHotbarSlot ? this.getHotbarSlot() : 0;
+    const inv = this.getInventory ? this.getInventory() : [];
+
+    // Fallback 1: If heldItem is empty, check currently selected hotbar slot in inventory
+    if (!ActionController.hasValidItem(heldItem) && Array.isArray(inv) && inv[hotbarSlot]) {
+      heldItem = inv[hotbarSlot];
+    }
+
+    // Fallback 2: If current slot is empty, search hotbar slots 0..8 for any valid item
+    if (!ActionController.hasValidItem(heldItem) && Array.isArray(inv)) {
+      for (let s = 0; s < 9; s++) {
+        if (ActionController.hasValidItem(inv[s])) {
+          hotbarSlot = s;
+          heldItem = inv[s];
+          if (this.switchSlotCallback) this.switchSlotCallback(s);
+          break;
+        }
+      }
+    }
+
+    if (!ActionController.hasValidItem(heldItem)) {
+      logger.debug('throwItem requested but hand and hotbar are empty.', this.accountId);
+      return false;
+    }
 
     const formattedItem = {
       network_id: typeof heldItem?.network_id === 'number' ? heldItem.network_id : (typeof heldItem?.id === 'number' ? heldItem.id : 0),
@@ -373,10 +395,11 @@ export class ActionController {
       block_runtime_id: heldItem?.block_runtime_id || 0,
       extra: heldItem?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
     };
+    const emptyItem = { network_id: 0 };
 
     let sent = false;
 
-    // 1. Primary: player_action drop_item (standard Bedrock drop)
+    // 1. Primary: player_action drop_item (standard Bedrock drop packet)
     try {
       client.queue('player_action', {
         runtime_entity_id: runtimeId,
@@ -386,71 +409,110 @@ export class ActionController {
         face: 0,
       });
       sent = true;
-    } catch {}
+    } catch (err: any) {
+      logger.debug(`Failed to queue player_action drop: ${err?.message}`);
+    }
 
-    // 2. Secondary: inventory_transaction item_release drop_item (Geyser / Paper compatible)
+    // 2. Secondary: inventory_transaction normal drop (container -> world_interaction, Geyser / Paper compatible)
     try {
       client.queue('inventory_transaction', {
         transaction: {
           legacy: { legacy_request_id: 0, legacy_set_item_slots: [] },
-          transaction_type: 'item_release',
-          actions: [],
-          transaction_data: {
-            action_type: 'drop_item',
-            hotbar_slot: hotbarSlot,
-            held_item: formattedItem,
-            player_pos: pos,
-            click_pos: { x: 0, y: 0, z: 0 },
-          },
+          transaction_type: 'normal',
+          actions: [
+            {
+              source_type: 'container',
+              inventory_id: 'inventory',
+              slot: hotbarSlot,
+              old_item: formattedItem,
+              new_item: emptyItem,
+            },
+            {
+              source_type: 'world_interaction',
+              flags: 0,
+              slot: 0,
+              old_item: emptyItem,
+              new_item: formattedItem,
+            },
+          ],
+          transaction_data: undefined,
         },
       });
       sent = true;
-    } catch {}
+    } catch (err: any) {
+      logger.debug(`Failed to queue inventory_transaction drop: ${err?.message}`);
+    }
 
-    logger.info(`Threw item from hotbar slot ${hotbarSlot} (network_id: ${formattedItem.network_id}).`, this.accountId);
+    // 3. Tertiary: item_stack_request drop (Modern Bedrock 1.16+ ItemStackRequest system)
+    try {
+      client.queue('item_stack_request', {
+        requests: [
+          {
+            request_id: -(Date.now() % 1000000),
+            actions: [
+              {
+                type_id: 'drop',
+                count: heldItem?.count || 1,
+                source: {
+                  slot_type: { container_id: 'hotbar_and_inventory', dynamic_container_id: undefined },
+                  slot: hotbarSlot,
+                  stack_id: heldItem?.has_stack_id ? (heldItem.stack_id || 0) : 0,
+                },
+                randomly: false,
+              },
+            ],
+            custom_names: [],
+            cause: 'chat_public',
+          },
+        ],
+      });
+      sent = true;
+    } catch (err: any) {
+      logger.debug(`Failed to queue item_stack_request drop: ${err?.message}`);
+    }
+
+    logger.info(`Threw item from hotbar slot ${hotbarSlot} (${formattedItem.count}x network_id: ${formattedItem.network_id}).`, this.accountId);
     return sent;
   }
 
   /**
-   * Throw entire inventory — all hotbar, main inventory, armor, and offhand slots.
-   * Drops items with small delays between each to avoid packet flood.
+   * Throw entire inventory — all hotbar and main inventory slots.
+   * Staggered over short intervals to avoid packet floods or anti-cheat rate-limits.
    */
   public throwAll(): boolean {
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
-    const pos = this.getPosition();
     if (!client || runtimeId == null) return false;
 
     const inv = this.getInventory ? this.getInventory() : null;
-    let droppedCount = 0;
+    const emptyItem = { network_id: 0 };
 
-    // Drop across all 9 hotbar slots first
+    // Collect all slots to drop (0..8 hotbar, 9..35 main inventory)
+    const slotsToDrop: { slot: number; isHotbar: boolean; item?: any }[] = [];
+
+    // Always scan hotbar slots 0..8
     for (let slot = 0; slot < 9; slot++) {
-      try {
-        // Select slot
-        client.queue('player_hotbar', {
-          selected_slot: slot,
-          window_id: 'inventory',
-          select_slot: true,
-        });
-
-        // Drop via player_action
-        client.queue('player_action', {
-          runtime_entity_id: runtimeId,
-          action: 'drop_item',
-          position: { x: 0, y: 0, z: 0 },
-          result_position: { x: 0, y: 0, z: 0 },
-          face: 0,
-        });
-        droppedCount++;
-      } catch {}
+      const it = (Array.isArray(inv) && inv[slot]) ? inv[slot] : null;
+      slotsToDrop.push({ slot, isHotbar: true, item: it });
     }
 
-    // Also iterate full inventory if available
-    if (Array.isArray(inv) && inv.length > 0) {
-      for (let slot = 0; slot < inv.length; slot++) {
-        const item = inv[slot];
-        if (!ActionController.hasValidItem(item)) continue;
+    // Also scan remaining main inventory slots 9..35
+    if (Array.isArray(inv) && inv.length > 9) {
+      for (let slot = 9; slot < inv.length; slot++) {
+        const it = inv[slot];
+        if (ActionController.hasValidItem(it)) {
+          slotsToDrop.push({ slot, isHotbar: false, item: it });
+        }
+      }
+    }
+
+    // Stagger drops across short intervals (40ms apart)
+    slotsToDrop.forEach((entry, index) => {
+      setTimeout(() => {
+        if (!this.getClient()) return;
+        const s = entry.slot;
+        const currentInv = this.getInventory ? this.getInventory() : [];
+        const item = entry.item || (Array.isArray(currentInv) ? currentInv[s] : null);
 
         const formattedItem = {
           network_id: typeof item?.network_id === 'number' ? item.network_id : (typeof item?.id === 'number' ? item.id : 0),
@@ -461,29 +523,83 @@ export class ActionController {
           extra: item?.extra || { has_nbt: 0, can_place_on: [], can_destroy: [] },
         };
 
-        const hotbarSlot = slot < 9 ? slot : 0;
+        if (entry.isHotbar) {
+          // 1. Select hotbar slot
+          try {
+            client.queue('player_hotbar', {
+              selected_slot: s,
+              window_id: 'inventory',
+              select_slot: true,
+            });
+          } catch {}
 
+          // 2. Drop via player_action
+          try {
+            client.queue('player_action', {
+              runtime_entity_id: runtimeId,
+              action: 'drop_item',
+              position: { x: 0, y: 0, z: 0 },
+              result_position: { x: 0, y: 0, z: 0 },
+              face: 0,
+            });
+          } catch {}
+        }
+
+        // 3. Drop via inventory_transaction normal (container -> world)
         try {
           client.queue('inventory_transaction', {
             transaction: {
               legacy: { legacy_request_id: 0, legacy_set_item_slots: [] },
-              transaction_type: 'item_release',
-              actions: [],
-              transaction_data: {
-                action_type: 'drop_item',
-                hotbar_slot: hotbarSlot,
-                held_item: formattedItem,
-                player_pos: pos,
-                click_pos: { x: 0, y: 0, z: 0 },
-              },
+              transaction_type: 'normal',
+              actions: [
+                {
+                  source_type: 'container',
+                  inventory_id: 'inventory',
+                  slot: s,
+                  old_item: formattedItem,
+                  new_item: emptyItem,
+                },
+                {
+                  source_type: 'world_interaction',
+                  flags: 0,
+                  slot: 0,
+                  old_item: emptyItem,
+                  new_item: formattedItem,
+                },
+              ],
+              transaction_data: undefined,
             },
           });
-          droppedCount++;
         } catch {}
-      }
-    }
 
-    logger.info(`Throw All: dropped items across inventory and hotbar slots.`, this.accountId);
+        // 4. Drop via item_stack_request
+        try {
+          client.queue('item_stack_request', {
+            requests: [
+              {
+                request_id: -(Date.now() % 1000000) - index,
+                actions: [
+                  {
+                    type_id: 'drop',
+                    count: item?.count || 1,
+                    source: {
+                      slot_type: { container_id: 'hotbar_and_inventory', dynamic_container_id: undefined },
+                      slot: s,
+                      stack_id: item?.has_stack_id ? (item.stack_id || 0) : 0,
+                    },
+                    randomly: false,
+                  },
+                ],
+                custom_names: [],
+                cause: 'chat_public',
+              },
+            ],
+          });
+        } catch {}
+      }, index * 40);
+    });
+
+    logger.info(`Throw All: initiated staggered item drops across ${slotsToDrop.length} inventory slots.`, this.accountId);
     return true;
   }
 

@@ -122,14 +122,14 @@ export class DiscordChannelManager {
         if (matchingArray.length > 1) {
           for (let i = 1; i < matchingArray.length; i++) {
             const dup = matchingArray[i];
-            logger.warn(`Pruning duplicate Discord channel #${dup.name} (ID: ${dup.id}) for bot [${accountId}]`, accountId);
+            logger.debug(`Pruning duplicate Discord channel #${dup.name} (ID: ${dup.id}) for bot [${accountId}]`, accountId);
             dup.delete(`Duplicate channel cleanup for bot ${accountId}`).catch((err) => {
               logger.debug(`Failed to delete duplicate channel ${dup.id}: ${err?.message || err}`);
             });
           }
         }
 
-        logger.info(`Found existing Discord channel #${primaryChannel.name} for bot [${accountId}] (Category: ${effectiveCategoryId})`, accountId);
+        logger.debug(`Found existing Discord channel #${primaryChannel.name} for bot [${accountId}] (Category: ${effectiveCategoryId})`, accountId);
 
         // If channel is under a different category, move it to the target category
         if (primaryChannel.parentId !== effectiveCategoryId && typeof (primaryChannel as any).setParent === 'function') {
@@ -201,10 +201,10 @@ export class DiscordChannelManager {
         topic: `Private control channel for DonutSMP Bedrock bot [${accountId}] (Node: ${nodeId || 'Master'})`,
       });
 
-      logger.info(`Created private Discord channel #${newChannel.name} in category [${effectiveCategoryId}] for bot [${accountId}]`, accountId);
+      logger.debug(`Created private Discord channel #${newChannel.name} in category [${effectiveCategoryId}] for bot [${accountId}]`, accountId);
       return newChannel;
     } catch (err) {
-      logger.error(`Failed to get or create Discord channel for bot [${accountId}]`, accountId, err);
+      logger.debug(`Failed to get or create Discord channel for bot [${accountId}]: ${err}`, accountId);
       return null;
     }
   }
@@ -295,7 +295,7 @@ export class DiscordChannelManager {
 
           for (const [, channel] of channelsToDelete) {
             await channel.delete(`Bot account ${botId} deleted`).catch(() => {});
-            logger.info(`Deleted Discord channel #${(channel as any).name} for removed bot [${botId}]`, botId);
+            logger.debug(`Deleted Discord channel #${(channel as any).name} for removed bot [${botId}]`, botId);
             deletedAny = true;
           }
         }
@@ -317,7 +317,7 @@ export class DiscordChannelManager {
 
           for (const [, channel] of channelsToDelete) {
             await channel.delete(`Bot account ${botId} deleted`).catch(() => {});
-            logger.info(`Deleted Discord channel #${(channel as any).name} across guild for removed bot [${botId}]`, botId);
+            logger.debug(`Deleted Discord channel #${(channel as any).name} across guild for removed bot [${botId}]`, botId);
             deletedAny = true;
           }
         } catch (innerErr) {
@@ -327,7 +327,7 @@ export class DiscordChannelManager {
 
       return deletedAny;
     } catch (err) {
-      logger.error(`Failed to delete Discord channel for bot [${botId}]`, botId, err);
+      logger.debug(`Failed to delete Discord channel for bot [${botId}]: ${err}`, botId);
       return false;
     }
   }
@@ -413,7 +413,7 @@ export class DiscordChannelManager {
       // 1. Delete extra channels not belonging to any valid bot in this category
       for (const ch of extraChannels) {
         try {
-          logger.warn(`Deleting extra non-bot channel #${ch.name} (ID: ${ch.id}) from category [${categoryId}]`);
+          logger.debug(`Deleting extra non-bot channel #${ch.name} (ID: ${ch.id}) from category [${categoryId}]`);
           await ch.delete('Deleting extra channel from managed bot category');
           deletedCount++;
         } catch (delErr: any) {
@@ -428,7 +428,7 @@ export class DiscordChannelManager {
           for (let i = 1; i < channels.length; i++) {
             const dup = channels[i];
             try {
-              logger.warn(`Deleting duplicate channel #${dup.name} (ID: ${dup.id}) for bot [${bId}] in category [${categoryId}]`);
+              logger.debug(`Deleting duplicate channel #${dup.name} (ID: ${dup.id}) for bot [${bId}] in category [${categoryId}]`);
               await dup.delete(`Duplicate channel cleanup for bot ${bId}`);
               deletedCount++;
             } catch (dupErr: any) {
@@ -438,7 +438,7 @@ export class DiscordChannelManager {
         }
       }
     } catch (err: any) {
-      logger.error(`Error during category channel sweep for category [${categoryId}]: ${err?.message || err}`);
+      logger.debug(`Error during category channel sweep for category [${categoryId}]: ${err?.message || err}`);
     }
 
     return deletedCount;

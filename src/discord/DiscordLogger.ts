@@ -60,7 +60,7 @@ export class DiscordLogger {
     if (!httpDelivered) {
       try {
         await insertCommand('node-1', null, 'DISCORD_LOG', payload);
-        logger.info(`Relayed Discord log (${payload.type} for ${payload.botName || 'bot'}) to master node via Supabase queue`);
+        logger.debug(`Relayed Discord log (${payload.type} for ${payload.botName || 'bot'}) to master node via Supabase queue`);
       } catch (err: any) {
         logger.debug(`Supabase command relay failed: ${err?.message}`);
       }
@@ -77,7 +77,7 @@ export class DiscordLogger {
         await (channel as TextChannel).send({ embeds: [embed] });
       }
     } catch (err) {
-      logger.error(`Failed to send Discord embed to channel ${channelId}`, undefined, err);
+      logger.debug(`Failed to send Discord embed to channel ${channelId}: ${err}`);
     }
   }
 
@@ -91,7 +91,7 @@ export class DiscordLogger {
         await (channel as TextChannel).send(message);
       }
     } catch (err) {
-      logger.error(`Failed to send Discord message to channel ${channelId}`, undefined, err);
+      logger.debug(`Failed to send Discord message to channel ${channelId}: ${err}`);
     }
   }
 

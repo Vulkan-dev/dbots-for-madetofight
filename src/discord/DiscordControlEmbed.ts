@@ -177,6 +177,12 @@ export class DiscordControlEmbed {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(!isOnline);
 
+    const dropBtn = new ButtonBuilder()
+      .setCustomId(`btn_drop_${accountId}`)
+      .setLabel('Drop Items')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!isOnline);
+
     const retryProfileBtn = new ButtonBuilder()
       .setCustomId(`btn_retry_profile_${accountId}`)
       .setLabel('Retry Profile Check')
@@ -194,7 +200,8 @@ export class DiscordControlEmbed {
     const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
       setAfkBtn,
       unafkBtn,
-      crouchBtn
+      crouchBtn,
+      dropBtn
     );
     rows.push(row2);
 
@@ -274,9 +281,9 @@ export class DiscordControlEmbed {
       };
       this.saveState(state);
       this.lastRenderedDigest.set(accountId, digest);
-      logger.info(`Cleared channel messages and posted fresh control embed (ID: ${newMsg.id}) in #${channel.name}`, accountId);
+      logger.debug(`Cleared channel messages and posted fresh control embed (ID: ${newMsg.id}) in #${channel.name}`, accountId);
     } catch (err) {
-      logger.error(`Failed to post fresh control embed message in channel #${channel.name}`, accountId, err);
+      logger.debug(`Failed to post fresh control embed message in channel #${channel.name}: ${err}`, accountId);
     }
   }
 
@@ -339,7 +346,7 @@ export class DiscordControlEmbed {
 
               if (!this.recoveredBots.has(accountId)) {
                 this.recoveredBots.add(accountId);
-                logger.info(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name} after restart`, accountId);
+                logger.debug(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name} after restart`, accountId);
               } else {
                 logger.debug(`Recovered existing control embed message [${targetMsg.id}] in #${channel.name}`, accountId);
               }
@@ -390,9 +397,9 @@ export class DiscordControlEmbed {
         this.saveState(state);
         this.lastRenderedDigest.set(accountId, digest);
         this.recoveredBots.add(accountId);
-        logger.info(`Posted control embed message (ID: ${newMsg.id}) in #${channel.name}`, accountId);
+        logger.debug(`Posted control embed message (ID: ${newMsg.id}) in #${channel.name}`, accountId);
       } catch (err) {
-        logger.error(`Failed to post control embed message in channel #${channel.name}`, accountId, err);
+        logger.debug(`Failed to post control embed message in channel #${channel.name}: ${err}`, accountId);
       }
     })();
 
@@ -429,7 +436,7 @@ export class DiscordControlEmbed {
       if (state[accountId]) {
         delete state[accountId];
         this.saveState(state);
-        logger.info(`Removed Discord embed state for account [${accountId}]`, accountId);
+        logger.debug(`Removed Discord embed state for account [${accountId}]`, accountId);
       }
       const timer = this.updateDebounceTimers.get(accountId);
       if (timer) {
@@ -437,7 +444,7 @@ export class DiscordControlEmbed {
         this.updateDebounceTimers.delete(accountId);
       }
     } catch (err) {
-      logger.error(`Failed to delete discord state for [${accountId}]`, accountId, err);
+      logger.debug(`Failed to delete discord state for [${accountId}]: ${err}`, accountId);
     }
   }
 
@@ -469,7 +476,7 @@ export class DiscordControlEmbed {
             await msg.delete().catch((err: any) => {
               logger.debug(`Failed to delete Discord embed message [${messageId}]: ${err?.message || err}`);
             });
-            logger.info(`Successfully deleted Discord control embed message [${messageId}] for [${accountId}]`, accountId);
+            logger.debug(`Successfully deleted Discord control embed message [${messageId}] for [${accountId}]`, accountId);
           }
         }
 
