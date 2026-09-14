@@ -87,8 +87,9 @@ export class ActionController {
    * Toggle Crouch (Sneak) with synchronized Geyser InputCache transition states.
    * Default OFF; only enabled when explicitly toggled.
    */
-  public toggleCrouch(enabled?: boolean): boolean {
-    const targetState = enabled !== undefined ? enabled : !this.isCrouching;
+  public toggleCrouch(enabled?: boolean | string): boolean {
+    const boolState = typeof enabled === 'string' ? enabled === 'true' : (typeof enabled === 'boolean' ? enabled : undefined);
+    const targetState = boolState !== undefined ? boolState : !this.isCrouching;
     if (this.isCrouching === targetState) {
       return this.isCrouching;
     }
@@ -138,8 +139,9 @@ export class ActionController {
    * Toggle Continuous Jump.
    * Default OFF; smoothly synchronized with KeepAliveEngine jump physics.
    */
-  public toggleJump(enabled?: boolean): boolean {
-    const targetState = enabled !== undefined ? enabled : !this.isJumping;
+  public toggleJump(enabled?: boolean | string): boolean {
+    const boolState = typeof enabled === 'string' ? enabled === 'true' : (typeof enabled === 'boolean' ? enabled : undefined);
+    const targetState = boolState !== undefined ? boolState : !this.isJumping;
     if (this.isJumping === targetState) {
       return this.isJumping;
     }

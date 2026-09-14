@@ -577,57 +577,13 @@ export class BedrockBot extends EventEmitter {
         logger.info(`Operating in Offline / Direct mode for bot [${this.accountId}]. Microsoft login bypassed.`, this.accountId);
       }
 
-      let connectHost = this.appConfig.server.host;
-      let connectPort = this.appConfig.server.port;
-      let proxyInfoText = 'proxyless (direct)';
+      const connectHost = this.appConfig.server.host;
+      const connectPort = this.appConfig.server.port;
 
-      // Check if this specific account has an assigned proxy in ProxyStorage
-      const { ProxyStorage } = require('../storage/ProxyStorage');
-      const assignedProxy = ProxyStorage.getProxyForAccount(this.accountId);
-
-      if (assignedProxy) {
-        if (assignedProxy.type === 'relay' || assignedProxy.url.startsWith('relay://')) {
-          proxyInfoText = `Bedrock Relay '${assignedProxy.name}'`;
-          try {
-            const parsed = new URL(assignedProxy.url.replace(/^relay:\/\//, 'http://'));
-            if (parsed.hostname) {
-              connectHost = parsed.hostname;
-              if (parsed.port) connectPort = parseInt(parsed.port, 10);
-            }
-          } catch {
-            const parts = assignedProxy.url.replace(/^[a-zA-Z0-9]+:\/\//, '').split('@').pop()?.split(':');
-            if (parts && parts[0]) connectHost = parts[0];
-            if (parts && parts[1]) connectPort = parseInt(parts[1], 10);
-          }
-          logger.info(
-            `Account [${this.accountId}] assigned to Bedrock Relay '${assignedProxy.name}'. Connecting via ${connectHost}:${connectPort} -> Target ${this.appConfig.server.host}:${this.appConfig.server.port}`,
-            this.accountId
-          );
-        } else {
-          // It's an HTTP/SOCKS web proxy (like VaultProxies port 80).
-          // Minecraft Bedrock uses RakNet over UDP (port 19132).
-          // Standard web proxies are TCP-only and cannot receive or forward raw UDP packets.
-          // Connecting directly avoids RakTimeout "Ping timed out" while routing web calls through the proxy.
-          proxyInfoText = `Web Proxy '${assignedProxy.name}' (Direct Game UDP)`;
-          const masked = assignedProxy.url.replace(/:([^:@]+)@/, ':****@');
-          logger.warn(
-            `Account [${this.accountId}] assigned to web proxy '${assignedProxy.name}' (${masked}). ` +
-            `Notice: Standard HTTP/SOCKS web proxies are TCP-only and cannot route Bedrock RakNet UDP packets. ` +
-            `Connecting Bedrock game UDP directly to ${connectHost}:${connectPort} to prevent 'Ping timed out'.`,
-            this.accountId
-          );
-        }
-      } else {
-        logger.info(
-          `No proxy assigned for account [${this.accountId}]. Joining PROXYLESS (direct connection to ${connectHost}:${connectPort}).`,
-          this.accountId
-        );
-      }
-
-        logger.info(
-          `Initiating Bedrock connection to ${this.appConfig.server.host}:${this.appConfig.server.port} (Session: ${profilesPath})...`,
-          this.accountId
-        );
+      logger.info(
+        `Initiating Bedrock connection to ${connectHost}:${connectPort} (Session: ${profilesPath})...`,
+        this.accountId
+      );
 
         // Authentication (if any) is done — NOW start the 30s handshake timeout
         this.connectionTimeoutTimer = setTimeout(() => {
@@ -782,8 +738,13 @@ export class BedrockBot extends EventEmitter {
         this.keepAliveEngine.start();
       }
 
-      // Ensure action controller toggles and physics inputs are cleanly reset on world spawn
-      this.actionController.resetAllStates();
+      // Ensure action controller toggles and physics inputs are cleanly reset on initial connect
+      if (!this.actionController.isCrouching) {
+        this.actionController.resetAllStates();
+      } else {
+        // Re-apply active crouch toggle to newly spawned KeepAliveEngine
+        this.keepAliveEngine?.setSneak(true);
+      }
 
       // If a saved AFK spot exists in location.js, restore and enforce 5-minute AFK monitoring
       try {

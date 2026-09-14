@@ -26,7 +26,8 @@ export class DiscordLogger {
   private async getMasterNodeUrl(): Promise<string | null> {
     if (process.env.MASTER_NODE_URL) return process.env.MASTER_NODE_URL;
     const now = Date.now();
-    if (this.cachedMasterUrl && now - this.lastMasterUrlLookup < 60000) {
+    // Cache for 5 minutes to avoid repeated Supabase queries
+    if (this.cachedMasterUrl && now - this.lastMasterUrlLookup < 300000) {
       return this.cachedMasterUrl;
     }
     try {
@@ -41,14 +42,86 @@ export class DiscordLogger {
     return null;
   }
 
+  /**
+   * Directly posts to DISCORD_WEBHOOK_URL if configured.
+   * Delivers logs in under 100ms without bot channel latency.
+   */
+  public async sendToDirectWebhook(payload: any): Promise<boolean> {
+    const webhookUrl = (process.env.DISCORD_WEBHOOK_URL || '').trim();
+    if (!webhookUrl) return false;
+
+    try {
+      let body: any = null;
+      if (payload.type === 'join') {
+        body = {
+          embeds: [{
+            title: '🟢 Bot Connected',
+            color: 0x10b981,
+            fields: [
+              { name: 'Bot Name', value: payload.botName, inline: true },
+              { name: 'In-Game IGN', value: payload.ign, inline: true },
+              { name: 'Server', value: payload.serverHost, inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          }],
+        };
+      } else if (payload.type === 'leave') {
+        body = {
+          embeds: [{
+            title: '🔴 Bot Disconnected',
+            color: 0xef4444,
+            fields: [
+              { name: 'Bot Name', value: payload.botName, inline: true },
+              { name: 'In-Game IGN', value: payload.ign || payload.botName, inline: true },
+              { name: 'Reason', value: payload.reason || 'Connection lost', inline: false },
+            ],
+            timestamp: new Date().toISOString(),
+          }],
+        };
+      } else if (payload.type === 'player_detected') {
+        body = {
+          embeds: [{
+            title: '🚨 Player Detected',
+            color: 0xf59e0b,
+            fields: [
+              { name: '👤 Player', value: `**${payload.playerName}**`, inline: true },
+              { name: '📏 Distance', value: `${Number(payload.distance).toFixed(1)} blocks away`, inline: true },
+              { name: '📍 Coordinates', value: `\`${payload.posStr}\``, inline: false },
+              { name: '🤖 Bot Account', value: payload.botName, inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          }],
+        };
+      } else if (payload.type === 'afk') {
+        body = { content: `[AFK LOG - ${payload.botName}] ${payload.message}` };
+      }
+
+      if (body) {
+        await axios.post(webhookUrl, body, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 2500,
+        });
+        return true;
+      }
+    } catch (err: any) {
+      logger.debug(`Direct Discord webhook dispatch failed: ${err?.message}`);
+    }
+    return false;
+  }
+
   private async relayToMaster(payload: any): Promise<void> {
+    // Fast path: if DISCORD_WEBHOOK_URL is set, send directly with 0ms relay delay
+    if (await this.sendToDirectWebhook(payload)) {
+      return;
+    }
+
     const masterUrl = await this.getMasterNodeUrl();
     let httpDelivered = false;
     if (masterUrl) {
       try {
         const res = await axios.post(`${masterUrl}/api/internal/discord-log`, payload, {
           headers: { 'Content-Type': 'application/json' },
-          timeout: 5000,
+          timeout: 1500, // Reduced from 5000ms to eliminate stalling
         });
         if (res.status === 200) httpDelivered = true;
       } catch (err: any) {
@@ -103,14 +176,18 @@ export class DiscordLogger {
     const key = (botName || ign || 'bot').toLowerCase();
     const now = Date.now();
     const lastJoin = this.lastJoinTimes.get(key) || 0;
-    if (now - lastJoin < 45000) {
-      logger.debug(`Debounced duplicate Discord join log for [${key}] (last sent ${Math.round((now - lastJoin) / 1000)}s ago)`);
+    if (now - lastJoin < 3000) {
       return;
     }
     this.lastJoinTimes.set(key, now);
 
+    // If direct webhook is configured, dispatch immediately
+    await this.sendToDirectWebhook({ type: 'join', botName, ign, serverHost });
+
     if (!this.client) {
-      await this.relayToMaster({ type: 'join', botName, ign, serverHost });
+      if (!process.env.DISCORD_WEBHOOK_URL) {
+        await this.relayToMaster({ type: 'join', botName, ign, serverHost });
+      }
       return;
     }
 
@@ -131,7 +208,7 @@ export class DiscordLogger {
 
   /**
    * Logs a bot LEAVE event to DISCORD_LEFT_LOG_CHANNEL_ID
-   * Debounces repeated leave logs within 45 seconds to prevent spam during connection flapping.
+   * Debounces repeated leave logs within 3 seconds.
    */
   public async logBotLeft(botName: string, ign: string, reason?: string): Promise<void> {
     const key = (botName || ign || 'bot').toLowerCase();
@@ -142,19 +219,23 @@ export class DiscordLogger {
     if (!cleanReason || cleanReason.toLowerCase() === 'unknown' || cleanReason === 'undefined') {
       cleanReason = 'Connection lost / Server kick';
     } else if (cleanReason === 'Server disconnect packet received') {
-      cleanReason = 'Server closed connection / Proxy kick';
+      cleanReason = 'Server closed connection';
     } else if (cleanReason === 'Socket closed') {
       cleanReason = 'Socket closed by remote server';
     }
 
-    if (now - lastLeft < 45000) {
-      logger.debug(`Debounced duplicate Discord leave log for [${key}] (last sent ${Math.round((now - lastLeft) / 1000)}s ago)`);
+    if (now - lastLeft < 3000) {
       return;
     }
     this.lastLeftTimes.set(key, now);
 
+    // If direct webhook is configured, dispatch immediately
+    await this.sendToDirectWebhook({ type: 'leave', botName, ign, reason: cleanReason });
+
     if (!this.client) {
-      await this.relayToMaster({ type: 'leave', botName, ign, reason: cleanReason });
+      if (!process.env.DISCORD_WEBHOOK_URL) {
+        await this.relayToMaster({ type: 'leave', botName, ign, reason: cleanReason });
+      }
       return;
     }
 
@@ -180,8 +261,12 @@ export class DiscordLogger {
     const content = `[AFK LOG - ${botName}] ${message}`;
     logger.info(content, botName);
 
+    await this.sendToDirectWebhook({ type: 'afk', botName, message });
+
     if (!this.client) {
-      await this.relayToMaster({ type: 'afk', botName, message });
+      if (!process.env.DISCORD_WEBHOOK_URL) {
+        await this.relayToMaster({ type: 'afk', botName, message });
+      }
       return;
     }
 
@@ -194,8 +279,12 @@ export class DiscordLogger {
    * Logs Player Detected event to DISCORD_LOG_CHANNEL_ID
    */
   public async logPlayerDetected(botName: string, playerName: string, distance: number, posStr: string): Promise<void> {
+    await this.sendToDirectWebhook({ type: 'player_detected', botName, playerName, distance, posStr });
+
     if (!this.client) {
-      await this.relayToMaster({ type: 'player_detected', botName, playerName, distance, posStr });
+      if (!process.env.DISCORD_WEBHOOK_URL) {
+        await this.relayToMaster({ type: 'player_detected', botName, playerName, distance, posStr });
+      }
       return;
     }
 

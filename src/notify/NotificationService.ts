@@ -28,19 +28,21 @@ export class NotificationService {
   private endpoint: string;
 
   constructor(endpoint: string) {
-    this.endpoint = endpoint;
+    this.endpoint = (endpoint || process.env.DISCORD_WEBHOOK_URL || process.env.NOTIFICATION_ENDPOINT || '').trim();
   }
 
   public setEndpoint(endpoint: string): void {
-    this.endpoint = endpoint;
+    this.endpoint = (endpoint || process.env.DISCORD_WEBHOOK_URL || process.env.NOTIFICATION_ENDPOINT || '').trim();
   }
 
   /**
    * Send formatted Embed payload to configured notification endpoint.
    * Uses Discord Webhook embed structure with plain text fallback.
+   * Non-blocking with 2.5s timeout to prevent bot lag.
    */
   private async sendWebhook(embed: any, fallbackText: string, accountId: string): Promise<void> {
-    if (!this.endpoint || this.endpoint.trim() === '') {
+    const targetUrl = (this.endpoint || process.env.DISCORD_WEBHOOK_URL || process.env.NOTIFICATION_ENDPOINT || '').trim();
+    if (!targetUrl) {
       logger.debug(`Notification skipped (no endpoint configured):\n${fallbackText}`, accountId);
       return;
     }
@@ -53,9 +55,9 @@ export class NotificationService {
       };
 
       await axios.post(
-        this.endpoint,
+        targetUrl,
         payload,
-        { headers: { 'Content-Type': 'application/json' }, timeout: 5000 }
+        { headers: { 'Content-Type': 'application/json' }, timeout: 2500 }
       );
       logger.debug(`Notification sent successfully to endpoint`, accountId);
     } catch (error) {
@@ -63,7 +65,7 @@ export class NotificationService {
     }
   }
 
-  public async notifyPlayerDetected(data: PlayerDetectedPayload): Promise<void> {
+  public notifyPlayerDetected(data: PlayerDetectedPayload): void {
     const posStr = MathUtils.formatPos(data.position);
     logger.info(`[NOTIFY PLAYER] ${data.name} at ${posStr} (${data.distance.toFixed(1)}m)`, data.accountId);
 
@@ -80,15 +82,13 @@ export class NotificationService {
     };
 
     const fallback = `[PLAYER DETECTED] ${data.name} at ${posStr} (${data.distance.toFixed(1)}m) | Bot: ${data.accountId}`;
-    await this.sendWebhook(embed, fallback, data.accountId);
-
-    // Also dispatch to Discord channels (log channel & relay)
-    try {
-      await discordLogger.logPlayerDetected(data.accountId, data.name, data.distance, posStr);
-    } catch {}
+    
+    // Concurrent non-blocking dispatch to eliminate delay
+    this.sendWebhook(embed, fallback, data.accountId).catch(() => {});
+    discordLogger.logPlayerDetected(data.accountId, data.name, data.distance, posStr).catch(() => {});
   }
 
-  public async notifyContainerActivity(data: ContainerActivityPayload): Promise<void> {
+  public notifyContainerActivity(data: ContainerActivityPayload): void {
     const chestPosStr = MathUtils.formatPos(data.position);
     const playerPosStr = data.playerPos ? MathUtils.formatPos(data.playerPos) : 'Unknown';
 
@@ -108,10 +108,12 @@ export class NotificationService {
     };
 
     const fallback = `[CONTAINER ACTIVITY] ${data.type} opened by ${data.player} at Chest: ${chestPosStr} | Player: ${playerPosStr} | Bot: ${data.accountId}`;
-    await this.sendWebhook(embed, fallback, data.accountId);
+    
+    // Concurrent non-blocking dispatch
+    this.sendWebhook(embed, fallback, data.accountId).catch(() => {});
   }
 
-  public async notifyDefensiveAction(data: DefensiveActionPayload): Promise<void> {
+  public notifyDefensiveAction(data: DefensiveActionPayload): void {
     const posStr = MathUtils.formatPos(data.position);
     logger.info(`[NOTIFY DEFENSIVE] Target: ${data.target} at ${posStr}`, data.accountId);
 
@@ -127,6 +129,8 @@ export class NotificationService {
     };
 
     const fallback = `[DEFENSIVE ACTION] Target: ${data.target} at ${posStr} | Bot: ${data.accountId}`;
-    await this.sendWebhook(embed, fallback, data.accountId);
+    
+    // Concurrent non-blocking dispatch
+    this.sendWebhook(embed, fallback, data.accountId).catch(() => {});
   }
 }
