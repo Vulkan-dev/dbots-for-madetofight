@@ -604,6 +604,7 @@ export class AccountManager extends EventEmitter {
       let res: any;
       switch (action) {
         case 'toggle_crouch':      res = ctrl.toggleCrouch(state); break;
+        case 'jump':               res = ctrl.jump(); break;
         case 'toggle_jump':        res = ctrl.toggleJump(state); break;
         case 'toggle_left_click':  res = ctrl.toggleLeftClick(state); break;
         case 'toggle_right_click': res = ctrl.toggleRightClick(state); break;

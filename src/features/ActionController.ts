@@ -143,6 +143,21 @@ export class ActionController {
   }
 
   /**
+   * One-shot jump action.
+   * Smoothly synchronized with KeepAliveEngine jump physics.
+   */
+  public jump(): boolean {
+    const engine = this.getKeepAliveEngine();
+    if (engine) {
+      engine.triggerJump();
+      logger.info(`Jump executed`, this.accountId);
+      return true;
+    }
+    logger.warn(`Jump failed: KeepAliveEngine not available`, this.accountId);
+    return false;
+  }
+
+  /**
    * Toggle Continuous Jump.
    * Default OFF; smoothly synchronized with KeepAliveEngine jump physics.
    */
