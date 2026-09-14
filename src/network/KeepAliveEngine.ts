@@ -28,14 +28,21 @@ export class KeepAliveEngine {
   private moveTicksRemaining: number = 0;
   private moveStepX: number = 0;
   private moveStepZ: number = 0;
+  private getRuntimeEntityId: () => bigint | string | number;
 
   private onLatencyBound: ((packet: any) => void) | null = null;
   private onTickSyncBound: ((packet: any) => void) | null = null;
   private onCorrectionBound: ((packet: any) => void) | null = null;
 
-  constructor(client: Client, accountId: string, initialPosition?: Vector3D) {
+  constructor(
+    client: Client,
+    accountId: string,
+    initialPosition?: Vector3D,
+    getRuntimeEntityId?: () => bigint | string | number
+  ) {
     this.client = client;
     this.accountId = accountId;
+    this.getRuntimeEntityId = getRuntimeEntityId || (() => 0n);
     if (initialPosition) {
       this.position = { ...initialPosition };
     }
@@ -101,8 +108,10 @@ export class KeepAliveEngine {
   public clearInputFlags(): void {
     this.inputFlags.clear();
     this.isSneakingState = false;
+    this.lastSneakingState = false;
     this.stopSneakTicks = 0;
     this.isContinuousJump = false;
+    this.lastJumpingState = false;
     this.jumpTicksRemaining = 0;
     this.jumpCooldownTicks = 0;
     this.itemUseTicksRemaining = 0;
@@ -117,7 +126,7 @@ export class KeepAliveEngine {
   /**
    * Toggles sneak state with proper Geyser / Bedrock transition flags.
    * Keeps sneaking and sneak_down active while crouching.
-   * change_height is sent ONLY on the transition tick to eliminate server bounding-box lag.
+   * change_height is sent to synchronize server bounding-box height.
    */
   public setSneak(enabled: boolean): void {
     if (this.isSneakingState === enabled) return;
@@ -141,6 +150,7 @@ export class KeepAliveEngine {
     } else {
       this.jumpTicksRemaining = 0;
       this.jumpCooldownTicks = 0;
+      this.lastJumpingState = false;
       this.removeInputFlag('jumping');
       this.removeInputFlag('jump_down');
       this.removeInputFlag('start_jumping');
@@ -158,12 +168,20 @@ export class KeepAliveEngine {
       this.jumpTicksRemaining = 10;
       this.jumpCooldownTicks = 0;
 
+      const rid = this.getRuntimeEntityId ? this.getRuntimeEntityId() : 0n;
+      const entityId = (rid != null && rid !== 0n && rid !== '0') ? BigInt(rid) : 1n;
+      const blockPos = {
+        x: Math.floor(this.position.x),
+        y: Math.floor(this.position.y),
+        z: Math.floor(this.position.z),
+      };
+
       if (this.client) {
         try {
           this.client.queue('player_action', {
-            runtime_entity_id: 1n,
+            runtime_entity_id: entityId,
             action: 'jump',
-            position: { x: 0, y: 0, z: 0 },
+            position: blockPos,
             result_position: { x: 0, y: 0, z: 0 },
             face: 0,
           });
@@ -399,10 +417,9 @@ export class KeepAliveEngine {
         currentFlags.add('sneaking');
         currentFlags.add('sneak_down');
         currentFlags.add('sneak_current_raw');
-        // Only send start_sneaking, change_height, and sneak_pressed_raw on the initial transition tick (eliminates lag)
+        currentFlags.add('change_height');
         if (!this.lastSneakingState) {
           currentFlags.add('start_sneaking');
-          currentFlags.add('change_height');
           currentFlags.add('sneak_pressed_raw');
         }
       } else if (this.stopSneakTicks > 0) {

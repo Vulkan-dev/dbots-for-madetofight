@@ -98,6 +98,12 @@ export class ActionController {
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
     const engine = this.getKeepAliveEngine();
+    const pos = this.getPosition ? this.getPosition() : { x: 0, y: 0, z: 0 };
+    const blockPos = {
+      x: Math.floor(pos.x),
+      y: Math.floor(pos.y),
+      z: Math.floor(pos.z),
+    };
 
     // 1. Send Geyser/Bedrock 20Hz InputEngine sneak transition
     if (engine) {
@@ -107,10 +113,11 @@ export class ActionController {
     // 2. Also send player_action start_sneak/stop_sneak for vanilla BDS compatibility
     if (client && runtimeId != null) {
       try {
+        const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
         client.queue('player_action', {
-          runtime_entity_id: runtimeId,
+          runtime_entity_id: entityId,
           action: this.isCrouching ? 'start_sneak' : 'stop_sneak',
-          position: { x: 0, y: 0, z: 0 },
+          position: blockPos,
           result_position: { x: 0, y: 0, z: 0 },
           face: 0,
         });
@@ -150,6 +157,9 @@ export class ActionController {
     const engine = this.getKeepAliveEngine();
     if (engine) {
       engine.setJump(this.isJumping);
+      if (this.isJumping) {
+        engine.triggerJump();
+      }
     }
 
     logger.info(`Jump toggle: ${this.isJumping ? 'ON' : 'OFF'}`, this.accountId);

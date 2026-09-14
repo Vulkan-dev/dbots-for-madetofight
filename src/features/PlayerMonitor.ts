@@ -166,7 +166,18 @@ export class PlayerMonitor {
     const key = String(runtimeId);
     const player = this.trackedPlayers.get(key);
 
-    if (!player) return;
+    if (!player) {
+      if (MathUtils.isWithinChunkRadius(botPosition, newPosition, this.radiusChunks)) {
+        this.handlePlayerAdd(
+          runtimeId,
+          '',
+          `Player_${key}`,
+          newPosition,
+          botPosition
+        );
+      }
+      return;
+    }
 
     // Mutate coordinates in-place to avoid GC allocation on high-frequency movement packets
     player.position.x = newPosition.x;
@@ -180,13 +191,35 @@ export class PlayerMonitor {
       return;
     }
 
-    // Keep distance and position updated in real-time for combat/chest monitoring without spamming notifications
-    if (player.lastNotifiedPosition) {
-      player.lastNotifiedPosition.x = newPosition.x;
-      player.lastNotifiedPosition.y = newPosition.y;
-      player.lastNotifiedPosition.z = newPosition.z;
-    } else {
+    const currentDist = MathUtils.euclideanDistance(botPosition, newPosition);
+    const lastNotifiedDist = player.lastNotifiedPosition
+      ? MathUtils.euclideanDistance(botPosition, player.lastNotifiedPosition)
+      : Infinity;
+    const now = Date.now();
+    const timeSinceLastNotified = now - (player.lastNotifiedTime || 0);
+
+    // Alert triggers:
+    // 1. Player closed distance towards bot by >= thresholdBlocks (default 5 blocks, e.g. 20m -> 15m -> 10m -> 5m)
+    // 2. High-threat proximity: Player is within danger range (<= 16 blocks) and >= 8 seconds since last alert
+    // 3. Persistent presence: Player remains in chunk radius and >= 30 seconds since last alert
+    const movedSignificantlyCloser = (lastNotifiedDist - currentDist) >= (this.thresholdBlocks || 5);
+    const closeThreatRepeat = currentDist <= 16 && timeSinceLastNotified >= 8000;
+    const periodicReminder = timeSinceLastNotified >= 30000;
+
+    if (movedSignificantlyCloser || closeThreatRepeat || periodicReminder) {
       player.lastNotifiedPosition = { x: newPosition.x, y: newPosition.y, z: newPosition.z };
+      player.lastNotifiedTime = now;
+
+      IgnoreListStorage.isIgnored(player.username).then((ignored) => {
+        if (!ignored && this.notificationService) {
+          this.notificationService.notifyPlayerDetected({
+            name: player.username,
+            position: newPosition,
+            distance: currentDist,
+            accountId: this.accountId,
+          });
+        }
+      }).catch(() => {});
     }
   }
 

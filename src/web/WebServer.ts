@@ -367,13 +367,52 @@ export class WebServer {
     });
 
     // ── Bot actions ─────────────────────────────────────────────────────────
-    this.app.post('/api/bot/action', (req, res) => {
+    this.app.post('/api/bot/action', async (req, res) => {
       const { accountId, action, state, minDelay, maxDelay, degrees, distance } = req.body;
       if (!accountId || !action) {
         res.status(400).json({ success: false, error: 'accountId and action required' }); return;
       }
       try {
         const result = this.manager.executeBotAction(accountId, action, state, { minDelay, maxDelay, degrees, distance });
+
+        // If target is 'all', broadcast to all other nodes via Supabase commands
+        if (accountId === 'all') {
+          try {
+            const nodes = await getAllNodes();
+            const otherNodes = nodes.filter((n: any) => n.id !== this.config.nodeId);
+            for (const node of otherNodes) {
+              await insertCommand(node.id, null, 'BOT_ACTION', {
+                action,
+                accountId: 'all',
+                state,
+                options: { minDelay, maxDelay, degrees, distance },
+              }).catch(() => {});
+            }
+          } catch {}
+        } else if (!result.success && result.error?.includes('No active bot')) {
+          // If not found locally, check if the account is hosted on another node
+          try {
+            const accountRow = await getAccountById(accountId);
+            if (accountRow && accountRow.node_id && accountRow.node_id !== this.config.nodeId) {
+              await insertCommand(accountRow.node_id, accountId, 'BOT_ACTION', {
+                action,
+                accountId,
+                state,
+                options: { minDelay, maxDelay, degrees, distance },
+              });
+              // Also attempt direct HTTP if node URL is reachable
+              const nodes = await getAllNodes();
+              const targetNode = nodes.find((n: any) => n.id === accountRow.node_id);
+              if (targetNode && targetNode.url) {
+                const axios = require('axios');
+                axios.post(`${targetNode.url}/api/bot/action`, req.body, { timeout: 3000 }).catch(() => {});
+              }
+              res.json({ success: true, relayed: true, targetNodeId: accountRow.node_id });
+              return;
+            }
+          } catch {}
+        }
+
         res.json(result);
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });

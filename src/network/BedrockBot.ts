@@ -729,7 +729,12 @@ export class BedrockBot extends EventEmitter {
         if (this.keepAliveEngine) {
           this.keepAliveEngine.stop();
         }
-        this.keepAliveEngine = new KeepAliveEngine(this.client, this.accountId, this.currentPosition);
+        this.keepAliveEngine = new KeepAliveEngine(
+          this.client,
+          this.accountId,
+          this.currentPosition,
+          () => this.runtimeEntityId
+        );
         if (packet.rotation) {
           const initPitch = typeof packet.rotation.x === 'number' ? packet.rotation.x : 0;
           const initYaw = typeof packet.rotation.z === 'number' ? packet.rotation.z : 0;

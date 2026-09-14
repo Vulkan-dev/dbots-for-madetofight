@@ -1,7 +1,12 @@
+import http from 'http';
+import https from 'https';
 import axios from 'axios';
 import { Client, TextChannel, EmbedBuilder } from 'discord.js';
 import { logger } from '../utils/logger';
 import { getAllNodes, insertCommand } from '../database/SupabaseClient';
+
+const httpKeepAlive = new http.Agent({ keepAlive: true, maxSockets: 10 });
+const httpsKeepAlive = new https.Agent({ keepAlive: true, maxSockets: 10 });
 
 export class DiscordLogger {
   private client: Client | null = null;
@@ -25,6 +30,7 @@ export class DiscordLogger {
 
   private async getMasterNodeUrl(): Promise<string | null> {
     if (process.env.MASTER_NODE_URL) return process.env.MASTER_NODE_URL;
+    const fallbackMaster = 'https://donut-bots-production-30ad.up.railway.app';
     const now = Date.now();
     // Cache for 5 minutes to avoid repeated Supabase queries
     if (this.cachedMasterUrl && now - this.lastMasterUrlLookup < 300000) {
@@ -39,7 +45,9 @@ export class DiscordLogger {
         return master.url;
       }
     } catch {}
-    return null;
+    this.cachedMasterUrl = fallbackMaster;
+    this.lastMasterUrlLookup = now;
+    return fallbackMaster;
   }
 
   /**
@@ -121,7 +129,9 @@ export class DiscordLogger {
       try {
         const res = await axios.post(`${masterUrl}/api/internal/discord-log`, payload, {
           headers: { 'Content-Type': 'application/json' },
-          timeout: 1500, // Reduced from 5000ms to eliminate stalling
+          httpAgent: httpKeepAlive,
+          httpsAgent: httpsKeepAlive,
+          timeout: 2500,
         });
         if (res.status === 200) httpDelivered = true;
       } catch (err: any) {
