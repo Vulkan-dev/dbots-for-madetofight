@@ -177,6 +177,21 @@ export class ActionController {
       }
     }
 
+    const client = this.getClient();
+    const runtimeId = this.getRuntimeEntityId();
+    if (client && runtimeId != null && this.isJumping) {
+      try {
+        const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+        client.queue('player_action', {
+          runtime_entity_id: entityId,
+          action: 'jump',
+          position: { x: 0, y: 0, z: 0 },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
+        });
+      } catch {}
+    }
+
     logger.info(`Jump toggle: ${this.isJumping ? 'ON' : 'OFF'}`, this.accountId);
     return this.isJumping;
   }

@@ -134,7 +134,19 @@ export class AFKSpotTracker {
   }
 
   /**
-   * Deactivates AFK mode, stops the 5-minute monitoring, optionally issues /delhome 1, and removes location from storage.
+   * Pauses AFK monitoring when the bot disconnects or restarts session,
+   * keeping the saved AFK spot completely intact for reconnection.
+   */
+  public pauseForDisconnect(): void {
+    if (this.checkInterval) {
+      clearInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
+    // Note: Do NOT clear savedAfkSpot!
+  }
+
+  /**
+   * Deactivates AFK mode, stops the 5-minute monitoring, and only removes location from storage if deleteHome is true.
    */
   public async deactivateAfkMode(deleteHome: boolean = false): Promise<void> {
     if (deleteHome && this.executeCommandCallback) {
@@ -143,18 +155,20 @@ export class AFKSpotTracker {
       discordLogger.logAfkActivity(this.botName, 'UnAFK executed: Issued /delhome 1 and stopped 5-minute AFK monitoring.');
     }
 
-    this.isAfkMode = false;
-    this.isPaused = false;
-    this.savedAfkSpot = null;
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
       this.checkInterval = null;
     }
 
     if (deleteHome) {
-      LocationStorage.setAfkSpot(this.botName, this.nodeId, null);
+      this.isAfkMode = false;
+      this.isPaused = false;
+      this.savedAfkSpot = null;
+      await LocationStorage.setAfkSpot(this.botName, this.nodeId, null);
+    } else {
+      this.isPaused = true;
     }
-    logger.info('AFK Mode Deactivated.', this.botName);
+    logger.info(`AFK Mode Deactivated (deleteHome=${deleteHome}). Spot preserved: ${this.savedAfkSpot !== null}`, this.botName);
   }
 
   private startPeriodicCheck(): void {

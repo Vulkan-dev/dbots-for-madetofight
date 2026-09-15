@@ -36,6 +36,50 @@ export interface AccountStatusSummary {
 }
 
 export class AccountManager extends EventEmitter {
+  private static knownBotNames: Set<string> = new Set();
+  private static knownBotRuntimeIds: Set<string> = new Set();
+
+  public static registerBotName(name?: string | null): void {
+    if (!name) return;
+    const clean = name.trim().toLowerCase();
+    if (!clean) return;
+    AccountManager.knownBotNames.add(clean);
+    const stripped = clean.replace(/^[._*]+/, '');
+    if (stripped) {
+      AccountManager.knownBotNames.add(stripped);
+    }
+  }
+
+  public static registerBotRuntimeId(id?: bigint | number | string | null): void {
+    if (id == null) return;
+    const str = String(id);
+    if (str && str !== '0') {
+      AccountManager.knownBotRuntimeIds.add(str);
+    }
+  }
+
+  public static isKnownBot(name?: string | null, runtimeId?: bigint | number | string | null): boolean {
+    if (runtimeId != null) {
+      const str = String(runtimeId);
+      if (str && str !== '0' && AccountManager.knownBotRuntimeIds.has(str)) {
+        return true;
+      }
+    }
+
+    if (name) {
+      const clean = name.trim().toLowerCase();
+      if (!clean) return false;
+      if (AccountManager.knownBotNames.has(clean)) return true;
+      const stripped = clean.replace(/^[._*]+/, '');
+      if (stripped && AccountManager.knownBotNames.has(stripped)) return true;
+      for (const known of AccountManager.knownBotNames) {
+        const knownStripped = known.replace(/^[._*]+/, '');
+        if (knownStripped && (knownStripped === stripped || known === clean)) return true;
+      }
+    }
+    return false;
+  }
+
   private appConfig: AppConfig;
   private notificationService: NotificationService;
   private joinScheduler: JoinScheduler;
@@ -63,6 +107,9 @@ export class AccountManager extends EventEmitter {
     LocationStorage.populateFromSupabase(rows);
 
     for (const row of rows) {
+      AccountManager.registerBotName(row.id);
+      if (row.ign) AccountManager.registerBotName(row.ign);
+      if (row.gamertag) AccountManager.registerBotName(row.gamertag);
       try {
         if (!this.bots.has(row.id)) {
           await this.instantiateBot({
@@ -381,6 +428,15 @@ export class AccountManager extends EventEmitter {
       try {
         const pos = bot.currentPosition;
         const authIdent = bot.authManager?.getIdentity?.() || null;
+
+        AccountManager.registerBotName(id);
+        if (bot.inGameIgn) AccountManager.registerBotName(bot.inGameIgn);
+        if (bot.xboxUsername) AccountManager.registerBotName(bot.xboxUsername);
+        if (bot.runtimeEntityId) AccountManager.registerBotRuntimeId(bot.runtimeEntityId);
+
+        const savedSpot = bot.afkSpotTracker.getSavedSpot() || LocationStorage.getLocation(id);
+        const isAfkActive = savedSpot !== null && (bot.afkSpotTracker.isActive() || bot.getState() === ConnectionState.CONNECTED) && !bot.afkSpotTracker.isMonitoringPaused();
+
         await updateAccountFields(id, {
           node_id: this.appConfig.nodeId,
           status: bot.getState(),
@@ -390,8 +446,8 @@ export class AccountManager extends EventEmitter {
           pos_x: pos.x,
           pos_y: pos.y,
           pos_z: pos.z,
-          afk_spot_active: bot.afkSpotTracker.isActive(),
-          afk_spot: bot.afkSpotTracker.getSavedSpot(),
+          afk_spot_active: isAfkActive,
+          afk_spot: savedSpot,
           msa_code: bot.msaCodeData?.user_code ?? null,
           msa_url: bot.msaCodeData?.verification_uri ?? null,
           msa_direct_url: bot.msaCodeData?.direct_verification_uri ?? null,
@@ -564,6 +620,7 @@ export class AccountManager extends EventEmitter {
       const authIdent = bot.authManager?.getIdentity?.() || null;
       const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
       const xboxName = bot.xboxUsername || id;
+      const savedSpot = bot.afkSpotTracker.getSavedSpot() || LocationStorage.getLocation(id);
       summary.push({
         accountId: id,
         xboxUsername: xboxName,
@@ -575,9 +632,9 @@ export class AccountManager extends EventEmitter {
         authErrorMessage: bot.authErrorMessage,
         msaCodeData: bot.msaCodeData,
         inGameIgn: bot.inGameIgn || `${floodgatePrefix}${xboxName}`,
-        isAfkSpotActive: bot.afkSpotTracker.isActive(),
+        isAfkSpotActive: savedSpot !== null && bot.afkSpotTracker.isActive(),
         isAfkPaused: bot.afkSpotTracker.isMonitoringPaused(),
-        afkSpot: bot.afkSpotTracker.getSavedSpot(),
+        afkSpot: savedSpot,
         actionStates: bot.actionController.getStates(),
       });
     }
@@ -629,8 +686,11 @@ export class AccountManager extends EventEmitter {
     const bot = this.getBot(accountId);
     if (!bot) return { success: false, error: `No active bot matching '${accountId}'` };
     if (bot.getState() !== ConnectionState.CONNECTED) return { success: false, error: `Bot '${accountId}' is not connected.` };
-    if (bot.afkSpotTracker.isActive()) return { success: false, error: `Bot '${accountId}' already has an AFK spot. Use Reset instead.` };
-    bot.afkSpotTracker.activateAfkMode();
+    if (bot.afkSpotTracker.isActive() || bot.afkSpotTracker.getSavedSpot()) {
+      bot.afkSpotTracker.resetAfkLocation();
+    } else {
+      bot.afkSpotTracker.activateAfkMode();
+    }
     return { success: true, afkSpot: bot.afkSpotTracker.getSavedSpot() };
   }
 

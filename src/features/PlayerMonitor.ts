@@ -12,12 +12,23 @@ export interface TrackedPlayer {
   lastNotifiedTime?: number;
 }
 
+let _AccountManagerModule: any = null;
+function getAccountManager() {
+  if (!_AccountManagerModule) {
+    try {
+      _AccountManagerModule = require('../network/AccountManager').AccountManager;
+    } catch {}
+  }
+  return _AccountManagerModule;
+}
+
 export class PlayerMonitor {
   private accountId: string;
   private radiusChunks: number;
   private thresholdBlocks: number;
   private notificationService: NotificationService;
   private trackedPlayers: Map<string, TrackedPlayer> = new Map();
+  private isBotCheckCallback: ((name?: string, runtimeId?: any) => boolean) | null = null;
 
   // Rate-limiting state for throttled debug logging of unexpected/malformed packets
   private lastMissingIdLogTime: number = 0;
@@ -35,6 +46,21 @@ export class PlayerMonitor {
     this.radiusChunks = radiusChunks;
     this.thresholdBlocks = thresholdBlocks;
     this.notificationService = notificationService;
+  }
+
+  public setBotCheckCallback(cb: (name?: string, runtimeId?: any) => boolean): void {
+    this.isBotCheckCallback = cb;
+  }
+
+  private isFellowBot(username?: string, runtimeId?: any): boolean {
+    if (this.isBotCheckCallback && this.isBotCheckCallback(username, runtimeId)) {
+      return true;
+    }
+    const mgr = getAccountManager();
+    if (mgr && typeof mgr.isKnownBot === 'function') {
+      return mgr.isKnownBot(username, runtimeId);
+    }
+    return false;
   }
 
   public updateConfig(radiusChunks: number, thresholdBlocks: number): void {
@@ -57,13 +83,13 @@ export class PlayerMonitor {
   /**
    * Called when a player entity is spawned or added to the client's entity list by the server.
    */
-  public async handlePlayerAdd(
+  public handlePlayerAdd(
     runtimeId: string | bigint | number | undefined | null,
     uuid: string,
     username: string,
     position: Vector3D,
     botPosition: Vector3D
-  ): Promise<void> {
+  ): void {
     if (runtimeId == null) {
       logger.debug('[PlayerMonitor] Ignoring add_player packet: missing runtime/entity ID', this.accountId);
       return;
@@ -94,9 +120,21 @@ export class PlayerMonitor {
       };
       this.trackedPlayers.set(key, player);
 
+      // Check if fellow bot (ignoring each other)
+      if (this.isFellowBot(player.username, runtimeId)) {
+        logger.debug(`[PlayerMonitor] Suppressed alert for fellow bot: ${player.username} (${runtimeId})`, this.accountId);
+        return;
+      }
+
       // Check ignore list before dispatching notification
-      if (await IgnoreListStorage.isIgnored(player.username)) {
+      if (IgnoreListStorage.isIgnored(player.username)) {
         logger.debug(`[PlayerMonitor] Suppressed alert for ignored player: ${player.username}`, this.accountId);
+        return;
+      }
+
+      // Suppress alerts for unresolved placeholder names (e.g. Player_123 or Unknown)
+      if (player.username.startsWith('Player_') || player.username === 'Unknown') {
+        logger.debug(`[PlayerMonitor] Suppressed alert for unresolved entity: ${player.username}`, this.accountId);
         return;
       }
 
@@ -112,6 +150,28 @@ export class PlayerMonitor {
       existing.position.x = position.x;
       existing.position.y = position.y;
       existing.position.z = position.z;
+
+      // If previously had a placeholder name, update with real username
+      if (username && username !== 'Unknown' && (!existing.username || existing.username.startsWith('Player_') || existing.username === 'Unknown')) {
+        existing.username = username;
+        existing.uuid = uuid || existing.uuid;
+
+        // If fellow bot or ignored, suppress
+        if (this.isFellowBot(username, runtimeId) || IgnoreListStorage.isIgnored(username)) {
+          return;
+        }
+
+        existing.lastNotifiedPosition = { x: position.x, y: position.y, z: position.z };
+        existing.lastNotifiedTime = Date.now();
+        if (this.notificationService) {
+          this.notificationService.notifyPlayerDetected({
+            name: username,
+            position,
+            distance,
+            accountId: this.accountId,
+          });
+        }
+      }
     }
   }
 
@@ -168,13 +228,16 @@ export class PlayerMonitor {
 
     if (!player) {
       if (MathUtils.isWithinChunkRadius(botPosition, newPosition, this.radiusChunks)) {
-        this.handlePlayerAdd(
-          runtimeId,
-          '',
-          `Player_${key}`,
-          newPosition,
-          botPosition
-        );
+        // Track position silently without dispatching alert until add_player packet provides actual username
+        const placeholderPlayer: TrackedPlayer = {
+          runtimeEntityId: runtimeId,
+          uuid: '',
+          username: `Player_${key}`,
+          position: { x: newPosition.x, y: newPosition.y, z: newPosition.z },
+          lastNotifiedPosition: { x: newPosition.x, y: newPosition.y, z: newPosition.z },
+          lastNotifiedTime: Date.now(),
+        };
+        this.trackedPlayers.set(key, placeholderPlayer);
       }
       return;
     }
@@ -210,16 +273,22 @@ export class PlayerMonitor {
       player.lastNotifiedPosition = { x: newPosition.x, y: newPosition.y, z: newPosition.z };
       player.lastNotifiedTime = now;
 
-      IgnoreListStorage.isIgnored(player.username).then((ignored) => {
-        if (!ignored && this.notificationService) {
-          this.notificationService.notifyPlayerDetected({
-            name: player.username,
-            position: newPosition,
-            distance: currentDist,
-            accountId: this.accountId,
-          });
-        }
-      }).catch(() => {});
+      // Skip fellow bots, ignored players, and unresolved placeholder names
+      if (this.isFellowBot(player.username, runtimeId) ||
+          IgnoreListStorage.isIgnored(player.username) ||
+          player.username.startsWith('Player_') ||
+          player.username === 'Unknown') {
+        return;
+      }
+
+      if (this.notificationService) {
+        this.notificationService.notifyPlayerDetected({
+          name: player.username,
+          position: newPosition,
+          distance: currentDist,
+          accountId: this.accountId,
+        });
+      }
     }
   }
 

@@ -58,7 +58,14 @@ export class PlayerHitResponse {
       this.lookCallback(randomDeltaPitch, randomDeltaYaw);
       await this.delay(150);
     }
-    // Crouch pulses removed: Bot crouch state is strictly user-controlled and never modified automatically
+    if (this.crouchCallback) {
+      for (let i = 0; i < this.crouchCount; i++) {
+        this.crouchCallback(true, false);
+        await this.delay(200);
+        this.crouchCallback(false, i === this.crouchCount - 1);
+        await this.delay(200);
+      }
+    }
   }
 
   private delay(ms: number): Promise<void> {

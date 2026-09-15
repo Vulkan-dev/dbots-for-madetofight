@@ -174,6 +174,17 @@ export class MicrosoftAuthManager extends EventEmitter {
 
   public logoutAccount(): void {
     this.clearCache();
+    try {
+      if (this.profilesFolder && fs.existsSync(this.profilesFolder)) {
+        fs.rmSync(this.profilesFolder, { recursive: true, force: true });
+      }
+      const folder = TokenStorage.getLocalProfilesFolder(this.profilesFolder);
+      if (fs.existsSync(folder)) {
+        fs.rmSync(folder, { recursive: true, force: true });
+      }
+    } catch (err: any) {
+      logger.debug(`logoutAccount rmSync error: ${err?.message}`, this.accountId);
+    }
   }
 
   public getAuthflow(): Authflow | null {
@@ -420,18 +431,22 @@ export class MicrosoftAuthManager extends EventEmitter {
       message.includes('Ensure that you are able to sign-in to Minecraft with this account');
 
     if (isBedrockAuthFailure) {
-      this.setStatus(AccountAuthStatus.AUTH_FAILED);
+      this.setStatus(AccountAuthStatus.XBOX_PROFILE_REQUIRED);
+      this.setupUrl = 'https://account.xbox.com/profile';
       this.authErrorMessage =
-        'Bedrock multiplayer authentication failed. Account may lack Bedrock entitlement or cached tokens are corrupted. Click Re-authenticate to try again.';
+        'Bedrock multiplayer authentication failed. Account may lack Bedrock entitlement. Complete profile at https://account.xbox.com/profile';
       logger.error(
         `\n====================================================================\n` +
         `  ❌ BEDROCK MULTIPLAYER AUTH FAILED [${this.accountId}]\n` +
         `  Account has Xbox profile but Bedrock multiplayer auth returned 401.\n` +
-        `  Try: Clear cached tokens and re-authenticate.\n` +
+        `  Visit https://account.xbox.com/profile to verify entitlement.\n` +
         `====================================================================\n`,
         this.accountId
       );
-      this.clearCache();
+      this.emit('profileRequired', {
+        accountId: this.accountId,
+        setupUrl: this.setupUrl,
+      });
       this.startAutoRetryTimer();
       return false;
     }

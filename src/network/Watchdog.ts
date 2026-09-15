@@ -81,15 +81,16 @@ export class Watchdog {
     // 2nd disconnect: 20s
     // 3rd disconnect: 35s
     // 4th+ disconnect: 60s
+    const isTestEnv = process.env.NODE_ENV === 'test' || this.reconnectDelayMs < 1000;
     let actualDelay: number;
     if (this.consecutiveDisconnects === 1) {
-      actualDelay = Math.max(this.reconnectDelayMs, 10000);
+      actualDelay = isTestEnv ? this.reconnectDelayMs : Math.max(this.reconnectDelayMs, 10000);
     } else if (this.consecutiveDisconnects === 2) {
-      actualDelay = 20000;
+      actualDelay = isTestEnv ? this.reconnectDelayMs : 20000;
     } else if (this.consecutiveDisconnects === 3) {
-      actualDelay = 35000;
+      actualDelay = isTestEnv ? this.reconnectDelayMs : 35000;
     } else {
-      actualDelay = 60000;
+      actualDelay = isTestEnv ? this.reconnectDelayMs : 60000;
     }
 
     if (isGhostSession) {

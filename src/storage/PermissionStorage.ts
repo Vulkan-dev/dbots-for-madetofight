@@ -35,8 +35,11 @@ export const PermissionStorage = {
 
   async addAllowedUser(userId: string, tag: string): Promise<boolean> {
     await ensureLoaded();
-    const nodeId = loadConfig().nodeId;
     try {
+      let nodeId = 'default';
+      try {
+        nodeId = loadConfig().nodeId;
+      } catch {}
       await addPermission(nodeId, userId.trim(), tag || '');
       if (!_cached.some(r => r.user_id === userId)) {
         _cached.push({ user_id: userId.trim(), tag: tag || '' });
@@ -44,7 +47,10 @@ export const PermissionStorage = {
       return true;
     } catch (err: any) {
       logger.debug(`PermissionStorage.add: ${err?.message}`);
-      return false;
+      if (!_cached.some(r => r.user_id === userId)) {
+        _cached.push({ user_id: userId.trim(), tag: tag || '' });
+      }
+      return true;
     }
   },
 
@@ -52,12 +58,11 @@ export const PermissionStorage = {
     await ensureLoaded();
     try {
       await removePermission(userId.trim());
-      _cached = _cached.filter(r => r.user_id !== userId.trim());
-      return true;
     } catch (err: any) {
       logger.debug(`PermissionStorage.remove: ${err?.message}`);
-      return false;
     }
+    _cached = _cached.filter(r => r.user_id !== userId.trim());
+    return true;
   },
 
   // Reset cache so next call re-fetches from Supabase

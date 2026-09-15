@@ -92,6 +92,14 @@ export const LocationStorage = {
     }
   },
 
+  saveLocation(accountId: string, spot: AfkSpot): void {
+    this.setAfkSpot(accountId, 'node-1', spot).catch(() => {});
+  },
+
+  removeLocation(accountId: string): void {
+    this.setAfkSpot(accountId, 'node-1', null).catch(() => {});
+  },
+
   /**
    * Populates location storage from Supabase account rows on node startup.
    */
@@ -105,6 +113,15 @@ export const LocationStorage = {
           z: Math.round(acc.afk_spot.z),
         });
         changed = true;
+      } else if (memoryCache.has(acc.id) && (!acc.afk_spot || acc.afk_spot_active === false)) {
+        // Disk had a saved AFK spot that was missing or null in Supabase — re-sync disk spot to Supabase
+        const diskSpot = memoryCache.get(acc.id);
+        if (diskSpot) {
+          updateAccountFields(acc.id, {
+            afk_spot: diskSpot,
+            afk_spot_active: true,
+          }).catch(() => {});
+        }
       }
     }
     if (changed) {

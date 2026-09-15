@@ -233,9 +233,14 @@ export async function removePermission(userId: string): Promise<void> {
 }
 
 // ─── Ignore List ────────────────────────────────────────────────────────────────
-export async function getIgnoreList(nodeId: string): Promise<string[]> {
+export async function getIgnoreList(nodeId?: string): Promise<string[]> {
   const client = getSupabaseClient();
-  const { data, error } = await client.from('ignore_list').select('player_name').eq('node_id', nodeId);
+  let query = client.from('ignore_list').select('player_name');
+  if (nodeId) {
+    // If nodeId is specified, fetch either this node's or global trusted players
+    query = query.or(`node_id.eq.${nodeId},node_id.is.null`);
+  }
+  const { data, error } = await query;
   if (error) logger.debug(`getIgnoreList: ${error.message}`);
   return (data || []).map((r: any) => r.player_name);
 }

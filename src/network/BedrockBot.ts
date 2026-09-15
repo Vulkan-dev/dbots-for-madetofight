@@ -136,6 +136,33 @@ export class BedrockBot extends EventEmitter {
       appConfig.afk.checkIntervalMs ?? 300000,
       appConfig.afk.locationTolerance ?? 10.0
     );
+
+    // Immediately restore persistent AFK spot from LocationStorage so it is never lost on restart
+    try {
+      const { LocationStorage } = require('../storage/LocationStorage');
+      const savedSpot = LocationStorage.getLocation(this.accountId);
+      if (savedSpot) {
+        this.afkSpotTracker.restoreFromStorage(savedSpot);
+      }
+    } catch {}
+
+    // Register bot identity in AccountManager
+    try {
+      const { AccountManager } = require('./AccountManager');
+      AccountManager.registerBotName(this.accountId);
+    } catch {}
+
+    // Attach bot-check callback to PlayerMonitor so fellow bots are automatically ignored
+    this.playerMonitor.setBotCheckCallback((name, runtimeId) => {
+      if (this.isSelfEntity(runtimeId)) return true;
+      try {
+        const { AccountManager } = require('./AccountManager');
+        return AccountManager.isKnownBot(name, runtimeId);
+      } catch {
+        return false;
+      }
+    });
+
     this.autoRespawn = new AutoRespawn(this.accountId);
 
     this.watchdog = new Watchdog(
@@ -154,6 +181,11 @@ export class BedrockBot extends EventEmitter {
       this.xboxUsername = initialIdent.gamertag;
       const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
       this.inGameIgn = `${floodgatePrefix}${this.xboxUsername}`;
+      try {
+        const { AccountManager } = require('./AccountManager');
+        AccountManager.registerBotName(this.xboxUsername);
+        AccountManager.registerBotName(this.inGameIgn);
+      } catch {}
     }
 
     this.authManager.on('msaCode', (codeData: any) => {
@@ -165,6 +197,11 @@ export class BedrockBot extends EventEmitter {
         this.xboxUsername = identity.gamertag;
         const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
         this.inGameIgn = `${floodgatePrefix}${this.xboxUsername}`;
+        try {
+          const { AccountManager } = require('./AccountManager');
+          AccountManager.registerBotName(this.xboxUsername);
+          AccountManager.registerBotName(this.inGameIgn);
+        } catch {}
       }
       this.emit('profileReady', identity);
     });
@@ -704,6 +741,10 @@ export class BedrockBot extends EventEmitter {
       const selfRuntimeId = packet.runtime_entity_id ?? packet.runtime_id ?? packet.entity_id ?? (this.client as any)?.clientRuntimeId;
       if (selfRuntimeId != null) {
         this.runtimeEntityId = selfRuntimeId;
+        try {
+          const { AccountManager } = require('./AccountManager');
+          AccountManager.registerBotRuntimeId(this.runtimeEntityId);
+        } catch {}
       }
       logger.info(`World initialized. Spawn Position: ${this.currentPosition.x}, ${this.currentPosition.y}, ${this.currentPosition.z}`, this.accountId);
 
@@ -751,10 +792,10 @@ export class BedrockBot extends EventEmitter {
         this.keepAliveEngine?.setSneak(true);
       }
 
-      // If a saved AFK spot exists in location.js, restore and enforce 5-minute AFK monitoring
+      // If a saved AFK spot exists in tracker or LocationStorage, restore and enforce 5-minute AFK monitoring
       try {
         const { LocationStorage } = require('../storage/LocationStorage');
-        const savedSpot = LocationStorage.getLocation(this.accountId);
+        const savedSpot = this.afkSpotTracker.getSavedSpot() || LocationStorage.getLocation(this.accountId);
         if (savedSpot) {
           this.afkSpotTracker.restoreFromStorage(savedSpot);
           setTimeout(() => {
@@ -800,6 +841,11 @@ export class BedrockBot extends EventEmitter {
           }
         }
       } else {
+        if (this.isSelfEntity(runtimeId)) return;
+        try {
+          const { AccountManager } = require('./AccountManager');
+          if (AccountManager.isKnownBot(undefined, runtimeId)) return;
+        } catch {}
         this.playerMonitor.handlePlayerMove(
           runtimeId,
           packet.position,
@@ -811,6 +857,13 @@ export class BedrockBot extends EventEmitter {
     this.client.on('add_player', (packet: any) => {
       // In Bedrock protocol, packet_add_player uses `runtime_id`. Check runtime_id with fallbacks.
       const runtimeId = packet.runtime_id ?? packet.runtime_entity_id ?? packet.entity_id;
+      if (this.isSelfEntity(runtimeId)) return;
+      try {
+        const { AccountManager } = require('./AccountManager');
+        if (AccountManager.isKnownBot(packet.username, runtimeId)) {
+          return;
+        }
+      } catch {}
       this.playerMonitor.handlePlayerAdd(
         runtimeId,
         packet.uuid || '',
@@ -1286,7 +1339,7 @@ export class BedrockBot extends EventEmitter {
       this.keepAliveEngine = null;
     }
     this.afkManager.stop();
-    this.afkSpotTracker.deactivateAfkMode(false);
+    this.afkSpotTracker.pauseForDisconnect();
     this.autoRespawn.cancel();
     this.actionController.resetAllStates();
     this.playerMonitor.clear();
