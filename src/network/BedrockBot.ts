@@ -470,6 +470,22 @@ export class BedrockBot extends EventEmitter {
       }
     });
 
+    this.playerHitResponse.setCrouchCallback((isSneaking: boolean, isCompleted?: boolean) => {
+      // If user has Always Crouch toggled ON, never leave the bot uncrouched!
+      if (this.actionController.isCrouching) {
+        if (isCompleted) {
+          this.actionController.reassertPersistentStates();
+        }
+        return;
+      }
+      if (this.keepAliveEngine) {
+        this.keepAliveEngine.setSneak(isSneaking);
+      }
+      if (isCompleted) {
+        this.actionController.reassertPersistentStates();
+      }
+    });
+
 
 
     // Watchdog auto-reconnect handler: Staggers reconnection through JoinScheduler to prevent auth rate-limits
@@ -858,11 +874,14 @@ export class BedrockBot extends EventEmitter {
               }
             }
             if (this.keepAliveEngine) {
-              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY);
+              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY, packet.on_ground);
             }
             this.actionController.resetAllStates();
           } else if (this.keepAliveEngine) {
             this.keepAliveEngine.updatePosition(this.currentPosition);
+            if (packet.on_ground !== undefined) {
+              this.keepAliveEngine.setGrounded(Boolean(packet.on_ground));
+            }
           }
 
           if (this.keepAliveEngine && packet.pitch != null && packet.yaw != null) {
@@ -890,6 +909,17 @@ export class BedrockBot extends EventEmitter {
           packet.position,
           this.currentPosition
         );
+      }
+    });
+
+    // Handle incoming entity motion (knockback from attacks, explosions, or collision push from other players)
+    this.client.on('set_entity_motion', (packet: any) => {
+      const runtimeId = packet.runtime_entity_id ?? packet.runtime_id ?? packet.entity_id;
+      if (this.isSelfEntity(runtimeId)) {
+        if (packet.velocity) {
+          logger.debug(`Applying incoming entity motion: vx=${packet.velocity.x}, vy=${packet.velocity.y}, vz=${packet.velocity.z}`, this.accountId);
+          this.keepAliveEngine?.applyMotion(packet.velocity);
+        }
       }
     });
 
@@ -1222,15 +1252,15 @@ export class BedrockBot extends EventEmitter {
         } catch {}
       }
 
-      // 1. Standard DonutSMP / EssentialsX / Paper patterns
-      const match1 = parsedCleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport|has requested that you teleport|wants to teleport|sent a teleport request|sent you a teleport request)/i);
+      // 1. Standard DonutSMP / EssentialsX / Paper / CMI patterns (TPA & TPAHERE)
+      const match1 = parsedCleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport|has requested that you teleport|has requested you to teleport|has requested you teleport|wants to teleport|wants you to teleport|sent a teleport request|sent you a teleport request|sent a teleport here request|sent you a teleport here request|sent a tpahere request|has sent a request to teleport you)/i);
       if (match1 && match1[1]) {
         requestingPlayer = match1[1];
       }
 
-      // 2. Pattern: "Teleport request from <player>" or "tpa from <player>"
+      // 2. Pattern: "Teleport request from <player>", "tpa from <player>", "tpahere from <player>"
       if (!requestingPlayer) {
-        const match2 = parsedCleanText.match(/(?:teleport request from|tpa from|tpa request from)\s+([a-zA-Z0-9_.*]+)/i);
+        const match2 = parsedCleanText.match(/(?:teleport request from|tpa request from|tpa from|teleport here request from|tpahere request from|tpahere from)\s+([a-zA-Z0-9_.*]+)/i);
         if (match2 && match2[1]) {
           requestingPlayer = match2[1];
         }
@@ -1238,22 +1268,30 @@ export class BedrockBot extends EventEmitter {
 
       // 3. Pattern: "[!] <player> wants to teleport" or "[Teleport] <player> has requested..."
       if (!requestingPlayer) {
-        const match3 = parsedCleanText.match(/\[(?:!|teleport|tpa)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|has requested|sent a)/i);
+        const match3 = parsedCleanText.match(/\[(?:!|teleport|tpa|tpahere)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|wants you to teleport|has requested|sent a)/i);
         if (match3 && match3[1]) {
           requestingPlayer = match3[1];
         }
       }
 
-      // 4. Pattern: "/tpaccept <player>" in instruction text
+      // 4. Pattern: "/tpaccept <player>", "/tpahere accept", "/tpaccept" in instruction text
       if (!requestingPlayer) {
-        const match4 = parsedCleanText.match(/\/tpaccept\s+([a-zA-Z0-9_.*]+)/i);
-        if (match4 && match4[1] && match4[1].toLowerCase() !== 'to' && match4[1].toLowerCase() !== 'type') {
+        const match4 = parsedCleanText.match(/\/(?:tpaccept|tpahere|tpyes)\s+([a-zA-Z0-9_.*]+)/i);
+        if (match4 && match4[1] && !['to', 'type', 'accept', 'here'].includes(match4[1].toLowerCase())) {
           requestingPlayer = match4[1];
         }
       }
 
-      // 5. Parameterized translation or generic /tpaccept notice
-      if (!requestingPlayer && (parsedCleanText.toLowerCase().includes('/tpaccept') || parsedCleanText.toLowerCase().includes('teleport'))) {
+      // 5. Pattern: "<player> wants to teleport to your location" or "<player> wants you to teleport to their location"
+      if (!requestingPlayer) {
+        const match5 = parsedCleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:wants to teleport to your location|wants you to teleport to their location|requested you to teleport|requested you teleport|requested to teleport here)/i);
+        if (match5 && match5[1]) {
+          requestingPlayer = match5[1];
+        }
+      }
+
+      // 6. Parameterized translation or generic /tpaccept / /tpahere notice
+      if (!requestingPlayer && (parsedCleanText.toLowerCase().includes('/tpaccept') || parsedCleanText.toLowerCase().includes('/tpahere') || parsedCleanText.toLowerCase().includes('teleport'))) {
         for (const p of params) {
           const strippedP = String(p).replace(/§[0-9a-fk-or]/gi, '').replace(/&[0-9a-fk-or]/gi, '').trim();
           if (/^[a-zA-Z0-9_.*]{3,20}$/.test(strippedP) && strippedP.toLowerCase() !== 'server') {
@@ -1289,9 +1327,9 @@ export class BedrockBot extends EventEmitter {
       this.lastTpacceptTime = now;
       this.lastTpacceptPlayer = cleanPlayer;
 
-      logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request from trusted player: '${cleanPlayer}'`, this.accountId);
+      logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request (TPA/TPAHERE) from trusted player: '${cleanPlayer}'`, this.accountId);
 
-      // Execute in-game commands: /tpaccept <player>, fallback /tpaccept, and /tpa accept
+      // Execute in-game commands: /tpaccept <player>, fallback /tpaccept, /tpahere accept, /tpa accept, /tpyes
       this.sendChat(`/tpaccept ${cleanPlayer}`);
 
       setTimeout(() => {
@@ -1300,7 +1338,15 @@ export class BedrockBot extends EventEmitter {
             this.sendChat('/tpaccept');
           }
         } catch {}
-      }, 300);
+      }, 250);
+
+      setTimeout(() => {
+        try {
+          if (this.client && this.state === ConnectionState.CONNECTED) {
+            this.sendChat('/tpahere accept');
+          }
+        } catch {}
+      }, 500);
 
       setTimeout(() => {
         try {
@@ -1308,7 +1354,15 @@ export class BedrockBot extends EventEmitter {
             this.sendChat('/tpa accept');
           }
         } catch {}
-      }, 600);
+      }, 750);
+
+      setTimeout(() => {
+        try {
+          if (this.client && this.state === ConnectionState.CONNECTED) {
+            this.sendChat('/tpyes');
+          }
+        } catch {}
+      }, 1000);
     } catch (err: any) {
       logger.debug(`Error handling teleport request: ${err?.message}`, this.accountId);
     }

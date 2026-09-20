@@ -58,7 +58,7 @@ async function runTests() {
   assert(engine.targetFloorY === null, 'targetFloorY should be cleared upon landing');
   console.log('✔ KeepAliveEngine.handleTeleportLanding safely descends floating bots to floor.');
 
-  // ── 3. Auto-Teleport Accept Pattern Extraction & Whitelist ───────────────────
+  // ── 3. Auto-Teleport Accept Pattern Extraction & Whitelist (TPA & TPAHERE) ───
   await IgnoreListStorage.addPlayer('TrustedFriend');
   AccountManager.registerBotName('FriendlyBot');
 
@@ -68,18 +68,30 @@ async function runTests() {
     { text: 'FriendlyBot sent a teleport request', expectedPlayer: 'FriendlyBot', allowed: true },
     { text: 'RandomGriefer has requested to teleport to you', expectedPlayer: 'RandomGriefer', allowed: false },
     { text: 'Teleport request from TrustedFriend', expectedPlayer: 'TrustedFriend', allowed: true },
+    // TPAHERE test cases:
+    { text: 'TrustedFriend has requested that you teleport to them', expectedPlayer: 'TrustedFriend', allowed: true },
+    { text: '§e[!] §aTrustedFriend §ewants you to teleport to them. Type /tpaccept to accept.', expectedPlayer: 'TrustedFriend', allowed: true },
+    { text: 'tpahere from TrustedFriend', expectedPlayer: 'TrustedFriend', allowed: true },
+    { text: 'Teleport here request from TrustedFriend', expectedPlayer: 'TrustedFriend', allowed: true },
+    { text: 'RandomGriefer sent a teleport here request', expectedPlayer: 'RandomGriefer', allowed: false },
+    { text: 'TrustedFriend sent you a teleport here request', expectedPlayer: 'TrustedFriend', allowed: true },
   ];
 
   for (const tc of testCases) {
     const cleanText = tc.text.replace(/§[0-9a-fk-or]/gi, '').trim();
     let extractedPlayer: string | null = null;
 
-    const match1 = cleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport to you|has requested that you teleport to them|wants to teleport to you|sent a teleport request|has requested a teleport)/i);
+    const match1 = cleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport|has requested that you teleport|has requested you to teleport|has requested you teleport|wants to teleport|wants you to teleport|sent a teleport request|sent you a teleport request|sent a teleport here request|sent you a teleport here request|sent a tpahere request|has sent a request to teleport you)/i);
     if (match1 && match1[1]) extractedPlayer = match1[1];
 
     if (!extractedPlayer) {
-      const match2 = cleanText.match(/(?:teleport request from|tpa from|tpa request from)\s+([a-zA-Z0-9_.*]+)/i);
+      const match2 = cleanText.match(/(?:teleport request from|tpa request from|tpa from|teleport here request from|tpahere request from|tpahere from)\s+([a-zA-Z0-9_.*]+)/i);
       if (match2 && match2[1]) extractedPlayer = match2[1];
+    }
+
+    if (!extractedPlayer) {
+      const match3 = cleanText.match(/\[(?:!|teleport|tpa|tpahere)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|wants you to teleport|has requested|sent a)/i);
+      if (match3 && match3[1]) extractedPlayer = match3[1];
     }
 
     assert(extractedPlayer?.toLowerCase() === tc.expectedPlayer.toLowerCase(), `Expected ${tc.expectedPlayer}, got ${extractedPlayer}`);
@@ -89,9 +101,58 @@ async function runTests() {
     const isAccepted = isTrusted || isBot;
     assert(isAccepted === tc.allowed, `Expected allowed=${tc.allowed} for player ${extractedPlayer}, got ${isAccepted}`);
   }
-  console.log('✔ Auto-tpaccept pattern matching and whitelist validation passed.');
+  console.log('✔ Auto-tpaccept and auto-tpahere pattern matching and whitelist validation passed.');
 
-  // ── 4. AFKSpotTracker onResetPhysics callback ────────────────────────────────
+  // ── 4. Realistic Knockback & Push Motion Simulation ─────────────────────────
+  const physicsEngine = new KeepAliveEngine(mockClient, 'physicsBot', { x: 50, y: 64, z: 50 });
+  (physicsEngine as any).isRunning = true;
+
+  // Apply knockback from a hit or push
+  physicsEngine.applyMotion({ x: 0.4, y: 0.35, z: -0.3 });
+  assert(physicsEngine.isGrounded === false, 'Knockback popping bot into air must set isGrounded=false');
+  assert(physicsEngine.velocity.x === 0.4, 'Velocity X must be set');
+  assert(physicsEngine.velocity.y === 0.35, 'Velocity Y must be set');
+
+  const prevX = physicsEngine.position.x;
+  const prevY = physicsEngine.position.y;
+  (physicsEngine as any).onTick();
+
+  assert(physicsEngine.position.x > prevX, 'Bot position X must move with knockback');
+  assert(physicsEngine.position.y > prevY, 'Bot position Y must arc upward with knockback');
+  assert(physicsEngine.velocity.x < 0.4, 'Horizontal velocity must decay from friction');
+  console.log('✔ Realistic push & knockback velocity physics validated.');
+
+  // ── 5. Gravity Fall When Floating Without Blocks (e.g. /home 1 in mid-air) ──
+  // Bot lands in mid-air with no floor underneath (server on_ground = false)
+  physicsEngine.handleTeleportLanding({ x: 200, y: 100, z: 200 }, undefined, false);
+  assert(physicsEngine.isGrounded === false, 'Mid-air landing without ground must have isGrounded=false');
+
+  const startFallY = physicsEngine.position.y;
+  for (let i = 0; i < 10; i++) {
+    (physicsEngine as any).onTick();
+  }
+  assert(physicsEngine.position.y < startFallY, 'Bot must fall downward under gravity when no blocks are beneath it');
+  assert(physicsEngine.isGrounded === false, 'Bot must continue falling and NOT freeze in mid-air');
+
+  // Server informs bot that it landed on solid ground (move_player on_ground=true)
+  physicsEngine.setGrounded(true);
+  assert(physicsEngine.isGrounded === true, 'setGrounded(true) must set isGrounded=true');
+  assert(physicsEngine.velocity.y === 0, 'Grounded bot must have vertical velocity reset to 0');
+  console.log('✔ Mid-air gravity fall and server ground resolution validated.');
+
+  // ── 6. Crouch Toggle (Always Crouch / Uncrouch) ──────────────────────────────
+  physicsEngine.setSneak(true);
+  assert((physicsEngine as any).isSneakingState === true, 'Sneak state must be true on toggle ON');
+  assert((physicsEngine as any).inputFlags.has('sneaking'), 'inputFlags must include sneaking');
+  assert((physicsEngine as any).inputFlags.has('persist_sneak'), 'inputFlags must include persist_sneak');
+
+  physicsEngine.setSneak(false);
+  assert((physicsEngine as any).isSneakingState === false, 'Sneak state must be false on toggle OFF');
+  assert(!(physicsEngine as any).inputFlags.has('sneaking'), 'sneaking must be cleared from inputFlags');
+  assert((physicsEngine as any).stopSneakTicks > 0, 'stopSneakTicks must be active during uncrouch transition');
+  console.log('✔ Crouch toggle ON / OFF input transitions validated.');
+
+  // ── 7. AFKSpotTracker onResetPhysics callback ────────────────────────────────
   let resetCalled: boolean = false;
   const tracker = new AFKSpotTracker('Bot1', 'node-1', 1000, 5.0);
   tracker.setCallbacks(
