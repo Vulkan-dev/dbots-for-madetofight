@@ -29,6 +29,7 @@ export class ActionController {
   private findItemSlotCallback?: (itemName: string) => number;
 
   public isCrouching: boolean = false;
+  public persistentCrouch: boolean = false;
   public isJumping: boolean = false;
   public isLeftClicking: boolean = false;
   public isRightClicking: boolean = false;
@@ -85,14 +86,12 @@ export class ActionController {
 
   /**
    * Toggle Crouch (Sneak) with synchronized Geyser InputCache transition states.
-   * Default OFF; only enabled when explicitly toggled.
+   * Stays persistently active across deaths, TPAs, and world changes until explicitly toggled off.
    */
   public toggleCrouch(enabled?: boolean | string): boolean {
     const boolState = typeof enabled === 'string' ? enabled === 'true' : (typeof enabled === 'boolean' ? enabled : undefined);
-    const targetState = boolState !== undefined ? boolState : !this.isCrouching;
-    if (this.isCrouching === targetState) {
-      return this.isCrouching;
-    }
+    const targetState = boolState !== undefined ? boolState : !this.persistentCrouch;
+    this.persistentCrouch = targetState;
     this.isCrouching = targetState;
 
     const client = this.getClient();
@@ -107,7 +106,7 @@ export class ActionController {
 
     // 1. Send Geyser/Bedrock 20Hz InputEngine sneak transition
     if (engine) {
-      engine.setSneak(this.isCrouching);
+      engine.setSneak(this.persistentCrouch);
     }
 
     // 2. Also send player_action start_sneak/stop_sneak for vanilla BDS compatibility
@@ -116,7 +115,7 @@ export class ActionController {
         const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
         client.queue('player_action', {
           runtime_entity_id: entityId,
-          action: this.isCrouching ? 'start_sneak' : 'stop_sneak',
+          action: this.persistentCrouch ? 'start_sneak' : 'stop_sneak',
           position: blockPos,
           result_position: { x: 0, y: 0, z: 0 },
           face: 0,
@@ -131,15 +130,48 @@ export class ActionController {
           motion_x: 0,
           motion_z: 0,
           jumping: false,
-          sneaking: this.isCrouching,
+          sneaking: this.persistentCrouch,
         });
       } catch (err) {
         logger.debug('Failed to send sneak player_input packet', this.accountId);
       }
     }
 
-    logger.info(`Crouch toggle: ${this.isCrouching ? 'ON' : 'OFF'}`, this.accountId);
-    return this.isCrouching;
+    logger.info(`Crouch toggle: ${this.persistentCrouch ? 'ON' : 'OFF'}`, this.accountId);
+    return this.persistentCrouch;
+  }
+
+  /**
+   * Reasserts persistent crouch stance following death, respawn, or teleport.
+   */
+  public reassertPersistentStates(): void {
+    if (!this.persistentCrouch) return;
+    this.isCrouching = true;
+    const engine = this.getKeepAliveEngine();
+    if (engine) {
+      engine.setSneak(true);
+    }
+    const client = this.getClient();
+    const runtimeId = this.getRuntimeEntityId();
+    if (client && runtimeId != null) {
+      try {
+        const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+        const pos = this.getPosition ? this.getPosition() : { x: 0, y: 0, z: 0 };
+        client.queue('player_action', {
+          runtime_entity_id: entityId,
+          action: 'start_sneak',
+          position: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
+        });
+        client.queue('player_input', {
+          motion_x: 0,
+          motion_z: 0,
+          jumping: false,
+          sneaking: true,
+        });
+      } catch {}
+    }
   }
 
   /**
@@ -761,6 +793,7 @@ export class ActionController {
       engine.clearInputFlags();
     }
 
+    this.persistentCrouch = false;
     this.isCrouching = false;
     this.isJumping = false;
     this.isLeftClicking = false;
@@ -769,28 +802,58 @@ export class ActionController {
   }
 
   /**
-   * Completely reset all actions and physics engine inputs to safe defaults
+   * Reset transient actions and physics engine inputs to safe defaults.
+   * Preserves persistent crouch toggle across deaths, respawns, and teleports unless keepPersistentCrouch is false.
    */
-  public resetAllStates(): void {
-    this.stopAll();
+  public resetAllStates(keepPersistentCrouch: boolean = true): void {
+    if (!keepPersistentCrouch) {
+      this.stopAll();
+      return;
+    }
+
+    // Stop transient physics actions
+    if (this.jumpInterval) {
+      clearInterval(this.jumpInterval);
+      this.jumpInterval = null;
+    }
+    if (this.rightClickInterval) {
+      clearInterval(this.rightClickInterval);
+      this.rightClickInterval = null;
+    }
+    if (this.spamClickTimeout) {
+      clearTimeout(this.spamClickTimeout);
+      this.spamClickTimeout = null;
+    }
+
     const engine = this.getKeepAliveEngine();
     if (engine) {
-      engine.setSneak(false);
-      engine.setJump(false);
       engine.clearInputFlags();
+      engine.setSneak(this.persistentCrouch);
+      engine.setJump(false);
     }
-    const client = this.getClient();
-    const runtimeId = this.getRuntimeEntityId();
-    if (client && runtimeId != null) {
-      try {
-        client.queue('player_action', {
-          runtime_entity_id: runtimeId,
-          action: 'stop_sneak',
-          position: { x: 0, y: 0, z: 0 },
-          result_position: { x: 0, y: 0, z: 0 },
-          face: 0,
-        });
-      } catch {}
+
+    this.isJumping = false;
+    this.isLeftClicking = false;
+    this.isRightClicking = false;
+    this.isSpamClicking = false;
+    this.isCrouching = this.persistentCrouch;
+
+    if (this.persistentCrouch) {
+      this.reassertPersistentStates();
+    } else {
+      const client = this.getClient();
+      const runtimeId = this.getRuntimeEntityId();
+      if (client && runtimeId != null) {
+        try {
+          client.queue('player_action', {
+            runtime_entity_id: runtimeId,
+            action: 'stop_sneak',
+            position: { x: 0, y: 0, z: 0 },
+            result_position: { x: 0, y: 0, z: 0 },
+            face: 0,
+          });
+        } catch {}
+      }
     }
   }
 }

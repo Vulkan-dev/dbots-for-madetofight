@@ -36,9 +36,13 @@ CREATE TABLE IF NOT EXISTS accounts (
   auth_error TEXT,
   auto_connect BOOLEAN DEFAULT false,
   offline_mode BOOLEAN DEFAULT false,
+  group_name TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Idempotent column migrations
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS group_name TEXT;
 
 -- 3. Auth Tokens
 CREATE TABLE IF NOT EXISTS auth_tokens (

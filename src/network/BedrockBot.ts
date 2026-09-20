@@ -415,6 +415,15 @@ export class BedrockBot extends EventEmitter {
             state: 2, // CLIENT_READY_TO_SPAWN
             runtime_entity_id: this.runtimeEntityId,
           });
+
+          // Reassert persistent crouch toggle stance after respawning
+          setTimeout(() => {
+            try {
+              if (this.state === ConnectionState.CONNECTED) {
+                this.actionController.reassertPersistentStates();
+              }
+            } catch {}
+          }, 500);
         } catch (err) {
           logger.error('Failed to send auto-respawn packets', this.accountId, err);
         }
@@ -1189,19 +1198,39 @@ export class BedrockBot extends EventEmitter {
 
       let requestingPlayer: string | null = null;
 
-      // 1. Standard Minecraft / EssentialsX / Spigot / Paper / DonutSMP request patterns:
-      // "<player> has requested to teleport to you"
-      // "<player> has requested that you teleport to them"
-      // "<player> wants to teleport to you"
-      // "<player> sent a teleport request"
-      const match1 = cleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport to you|has requested that you teleport to them|wants to teleport to you|sent a teleport request|has requested a teleport)/i);
+      // Extract text if rawMessage is a JSON component
+      let parsedCleanText = cleanText;
+      if (rawMessage.trim().startsWith('{') || rawMessage.trim().startsWith('[')) {
+        try {
+          const json = JSON.parse(rawMessage);
+          const extractText = (obj: any): string => {
+            if (!obj) return '';
+            if (typeof obj === 'string') return obj;
+            let res = obj.text || '';
+            if (Array.isArray(obj.extra)) {
+              res += obj.extra.map(extractText).join('');
+            }
+            return res;
+          };
+          const jsonText = extractText(json);
+          if (jsonText) {
+            parsedCleanText = `${jsonText} ${cleanText}`
+              .replace(/§[0-9a-fk-or]/gi, '')
+              .replace(/&[0-9a-fk-or]/gi, '')
+              .trim();
+          }
+        } catch {}
+      }
+
+      // 1. Standard DonutSMP / EssentialsX / Paper patterns
+      const match1 = parsedCleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport|has requested that you teleport|wants to teleport|sent a teleport request|sent you a teleport request)/i);
       if (match1 && match1[1]) {
         requestingPlayer = match1[1];
       }
 
       // 2. Pattern: "Teleport request from <player>" or "tpa from <player>"
       if (!requestingPlayer) {
-        const match2 = cleanText.match(/(?:teleport request from|tpa from|tpa request from)\s+([a-zA-Z0-9_.*]+)/i);
+        const match2 = parsedCleanText.match(/(?:teleport request from|tpa from|tpa request from)\s+([a-zA-Z0-9_.*]+)/i);
         if (match2 && match2[1]) {
           requestingPlayer = match2[1];
         }
@@ -1209,14 +1238,22 @@ export class BedrockBot extends EventEmitter {
 
       // 3. Pattern: "[!] <player> wants to teleport" or "[Teleport] <player> has requested..."
       if (!requestingPlayer) {
-        const match3 = cleanText.match(/\[(?:!|teleport|tpa)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|has requested|sent a)/i);
+        const match3 = parsedCleanText.match(/\[(?:!|teleport|tpa)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|has requested|sent a)/i);
         if (match3 && match3[1]) {
           requestingPlayer = match3[1];
         }
       }
 
-      // 4. Parameterized translation or generic /tpaccept notice:
-      if (!requestingPlayer && (cleanText.toLowerCase().includes('/tpaccept') || cleanText.toLowerCase().includes('teleport'))) {
+      // 4. Pattern: "/tpaccept <player>" in instruction text
+      if (!requestingPlayer) {
+        const match4 = parsedCleanText.match(/\/tpaccept\s+([a-zA-Z0-9_.*]+)/i);
+        if (match4 && match4[1] && match4[1].toLowerCase() !== 'to' && match4[1].toLowerCase() !== 'type') {
+          requestingPlayer = match4[1];
+        }
+      }
+
+      // 5. Parameterized translation or generic /tpaccept notice
+      if (!requestingPlayer && (parsedCleanText.toLowerCase().includes('/tpaccept') || parsedCleanText.toLowerCase().includes('teleport'))) {
         for (const p of params) {
           const strippedP = String(p).replace(/§[0-9a-fk-or]/gi, '').replace(/&[0-9a-fk-or]/gi, '').trim();
           if (/^[a-zA-Z0-9_.*]{3,20}$/.test(strippedP) && strippedP.toLowerCase() !== 'server') {
@@ -1253,22 +1290,25 @@ export class BedrockBot extends EventEmitter {
       this.lastTpacceptPlayer = cleanPlayer;
 
       logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request from trusted player: '${cleanPlayer}'`, this.accountId);
-      discordLogger.logAfkActivity(
-        this.accountId,
-        `🤝 **Auto Teleport Accepted**: Accepted teleport request from trusted player **${cleanPlayer}**`
-      );
 
-      // Execute in-game command: /tpaccept <player>
+      // Execute in-game commands: /tpaccept <player>, fallback /tpaccept, and /tpa accept
       this.sendChat(`/tpaccept ${cleanPlayer}`);
 
-      // Also send fallback /tpaccept after 250ms in case server only accepts bare /tpaccept
       setTimeout(() => {
         try {
           if (this.client && this.state === ConnectionState.CONNECTED) {
             this.sendChat('/tpaccept');
           }
         } catch {}
-      }, 250);
+      }, 300);
+
+      setTimeout(() => {
+        try {
+          if (this.client && this.state === ConnectionState.CONNECTED) {
+            this.sendChat('/tpa accept');
+          }
+        } catch {}
+      }, 600);
     } catch (err: any) {
       logger.debug(`Error handling teleport request: ${err?.message}`, this.accountId);
     }

@@ -161,45 +161,6 @@ async function main() {
     logger.warn('DISCORD_MASTER=true but DISCORD_TOKEN is not set. Discord bot disabled.');
   }
 
-  // ── Announce Node Category to Master Node ──────────────────────────────────
-  const nodeCatId = (config.discord.nodeBotCategoryId || process.env.NODE_DISCORD_BOT_CATEGORY_ID || '').trim();
-  if (nodeCatId) {
-    if (discordBot) {
-      await discordBot.registerNodeCategory(config.nodeId, nodeCatId);
-    } else {
-      const announceCategory = async () => {
-        try {
-          // 1. Send command to master node via Supabase commands table
-          await insertCommand('node-1', null, 'REGISTER_NODE_CATEGORY', {
-            nodeId: config.nodeId,
-            categoryId: nodeCatId,
-          });
-          logger.debug(`Announced Discord category [${nodeCatId}] for node '${config.nodeId}' to master via Supabase`);
-
-          // 2. Direct HTTP call if master node URL is registered
-          const nodes = await getAllNodes();
-          const master = nodes.find((n: any) => n.id === 'node-1' || n.name?.toLowerCase().includes('master'));
-          if (master && master.url) {
-            const axios = require('axios');
-            await axios.post(
-              `${master.url}/api/internal/register-node-category`,
-              { nodeId: config.nodeId, categoryId: nodeCatId },
-              { timeout: 5000 }
-            );
-            logger.debug(`Announced Discord category [${nodeCatId}] to master via HTTP (${master.url})`);
-          }
-        } catch (err: any) {
-          logger.debug(`Node category announcement: ${err?.message || err}`);
-        }
-      };
-
-      announceCategory().catch(() => {});
-      // Re-announce every 2 minutes so master always has category even across restarts
-      setInterval(() => {
-        announceCategory().catch(() => {});
-      }, 120000);
-    }
-  }
 
   // ── Graceful shutdown (with guard) ──────────────────────────────────────────
   let shuttingDown = false;

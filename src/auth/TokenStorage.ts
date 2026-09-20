@@ -334,17 +334,43 @@ export class TokenStorage {
   /**
    * Returns the local temp folder path (synchronous, for passing to prismarine-auth).
    */
-  public static getLocalProfilesFolder(accountId: string): string {
-    if (path.isAbsolute(accountId) && accountId.startsWith(PROFILES_BASE)) {
-      if (!fs.existsSync(accountId)) {
-        fs.mkdirSync(accountId, { recursive: true, mode: 0o700 });
+  public static getLocalProfilesFolder(accountIdOrPath: string): string {
+    if (!accountIdOrPath) {
+      return PROFILES_BASE;
+    }
+
+    if (path.isAbsolute(accountIdOrPath)) {
+      if (!fs.existsSync(accountIdOrPath)) {
+        try { fs.mkdirSync(accountIdOrPath, { recursive: true, mode: 0o700 }); } catch {}
       }
-      return accountId;
+      return accountIdOrPath;
     }
-    const folderPath = path.join(PROFILES_BASE, accountId);
+
+    // Extract raw account identifier from relative paths (e.g. "./profile/1" -> "1")
+    let rawAccountId = accountIdOrPath.trim();
+    if (rawAccountId.includes('/') || rawAccountId.includes('\\')) {
+      rawAccountId = path.basename(rawAccountId);
+    }
+
+    const folderPath = path.join(PROFILES_BASE, rawAccountId);
     if (!fs.existsSync(folderPath)) {
-      fs.mkdirSync(folderPath, { recursive: true, mode: 0o700 });
+      try { fs.mkdirSync(folderPath, { recursive: true, mode: 0o700 }); } catch {}
     }
+
+    // If legacy folder ./profile/<id> contains cache files but temp folder does not, copy over
+    const legacyFolder = path.resolve(process.cwd(), 'profile', rawAccountId);
+    if (fs.existsSync(legacyFolder)) {
+      try {
+        const legacyFiles = fs.readdirSync(legacyFolder).filter(f => f.endsWith('.json'));
+        for (const f of legacyFiles) {
+          const dest = path.join(folderPath, f);
+          if (!fs.existsSync(dest)) {
+            try { fs.copyFileSync(path.join(legacyFolder, f), dest); } catch {}
+          }
+        }
+      } catch {}
+    }
+
     return folderPath;
   }
 

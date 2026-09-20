@@ -100,6 +100,21 @@ export class DiscordLogger {
             timestamp: new Date().toISOString(),
           }],
         };
+      } else if (payload.type === 'chest_opened') {
+        body = {
+          embeds: [{
+            title: '📦 Chest Opened',
+            color: 0x3b82f6,
+            fields: [
+              { name: '📦 Container', value: payload.containerType || 'Chest', inline: true },
+              { name: '👤 Opened By', value: `**${payload.playerName || 'Unknown'}**`, inline: true },
+              { name: '📍 Chest Position', value: `\`${payload.chestPosStr || '—'}\``, inline: false },
+              ...(payload.playerPosStr ? [{ name: '🚶 Player Position', value: `\`${payload.playerPosStr}\``, inline: false }] : []),
+              { name: '🤖 Bot Account', value: payload.botName || '—', inline: true },
+            ],
+            timestamp: new Date().toISOString(),
+          }],
+        };
       } else if (payload.type === 'afk') {
         body = { content: `[AFK LOG - ${payload.botName}] ${payload.message}` };
       }
@@ -306,6 +321,51 @@ export class DiscordLogger {
         { name: '📏 Distance', value: `${distance.toFixed(1)} blocks away`, inline: true },
         { name: '📍 Coordinates', value: `\`${posStr}\``, inline: false },
         { name: '🤖 Bot Account', value: botName, inline: true }
+      )
+      .setTimestamp();
+
+    const targetChannel = (process.env.DISCORD_LOG_CHANNEL_ID || this.logChannelId || '').trim();
+    if (!targetChannel) return;
+    await this.sendEmbedToChannel(targetChannel, embed);
+  }
+
+  /**
+   * Logs Chest Opened event to DISCORD_LOG_CHANNEL_ID
+   */
+  public async logChestOpened(
+    botName: string,
+    playerName: string,
+    containerType: string,
+    chestPosStr: string,
+    playerPosStr?: string
+  ): Promise<void> {
+    const payload = {
+      type: 'chest_opened',
+      botName,
+      playerName,
+      containerType,
+      chestPosStr,
+      playerPosStr,
+    };
+
+    await this.sendToDirectWebhook(payload);
+
+    if (!this.client) {
+      if (!process.env.DISCORD_WEBHOOK_URL) {
+        await this.relayToMaster(payload);
+      }
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('📦 Chest Opened')
+      .setColor(0x3b82f6) // Blue
+      .addFields(
+        { name: '📦 Container', value: containerType || 'Chest', inline: true },
+        { name: '👤 Opened By', value: `**${playerName || 'Unknown'}**`, inline: true },
+        { name: '📍 Chest Position', value: `\`${chestPosStr || '—'}\``, inline: false },
+        ...(playerPosStr ? [{ name: '🚶 Player Position', value: `\`${playerPosStr}\``, inline: false }] : []),
+        { name: '🤖 Bot Account', value: botName || '—', inline: true }
       )
       .setTimestamp();
 

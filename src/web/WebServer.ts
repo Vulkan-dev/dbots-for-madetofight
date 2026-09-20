@@ -798,19 +798,7 @@ export class WebServer {
       }
     });
 
-    // ── Internal Discord Category Registration ──────────────────────────────
-    this.app.post('/api/internal/register-node-category', async (req, res) => {
-      try {
-        const { nodeId, categoryId } = req.body;
-        if (nodeId && categoryId && this.discordBot) {
-          await this.discordBot.registerNodeCategory(nodeId, categoryId);
-          return res.json({ success: true });
-        }
-        res.status(400).json({ success: false, error: 'Missing nodeId/categoryId or Discord bot not running' });
-      } catch (err: any) {
-        res.status(500).json({ success: false, error: err?.message });
-      }
-    });
+
 
     // ── Logs history ────────────────────────────────────────────────────────
     this.app.get('/api/logs', (_req, res) => {

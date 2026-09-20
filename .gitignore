@@ -44,3 +44,6 @@ config.yaml
 config.example.yaml
 .my friends/
 src/utils/ngrokManager.ts
+*backup*.json
+railway-envs/
+lol app/

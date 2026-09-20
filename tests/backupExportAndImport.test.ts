@@ -249,7 +249,9 @@ async function runTests() {
   console.log('\n🎉 ALL SYSTEM BACKUP EXPORT & IMPORT UNIT TESTS PASSED SUCCESSFULLY!\n');
 }
 
-runTests().catch((err) => {
+runTests().then(() => {
+  process.exit(0);
+}).catch((err) => {
   console.error('Test failed:', err);
   process.exit(1);
 });

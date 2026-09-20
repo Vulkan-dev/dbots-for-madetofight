@@ -111,6 +111,7 @@ export class NotificationService {
     
     // Concurrent non-blocking dispatch
     this.sendWebhook(embed, fallback, data.accountId).catch(() => {});
+    discordLogger.logChestOpened(data.accountId, data.player, data.type, chestPosStr, playerPosStr).catch(() => {});
   }
 
   public notifyDefensiveAction(data: DefensiveActionPayload): void {

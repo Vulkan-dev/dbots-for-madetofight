@@ -51,21 +51,19 @@ function saveToDisk(): void {
 // Synchronous initial load from disk so memory is immediately available
 loadFromDisk();
 
-async function syncWithSupabase(): Promise<void> {
-  if (_initialized) return;
+async function syncWithSupabase(force = false): Promise<void> {
+  if (_initialized && !force) return;
   try {
     const fromDb = await getIgnoreList();
-    let updated = false;
+    const newCached: string[] = [];
     for (const name of fromDb) {
       const clean = name.toLowerCase().trim();
-      if (clean && !_cached.includes(clean)) {
-        _cached.push(clean);
-        updated = true;
+      if (clean && !newCached.includes(clean)) {
+        newCached.push(clean);
       }
     }
-    if (updated) {
-      saveToDisk();
-    }
+    _cached = newCached;
+    saveToDisk();
     _initialized = true;
   } catch (err: any) {
     logger.debug(`IgnoreListStorage Supabase sync: ${err?.message}`);
@@ -73,8 +71,16 @@ async function syncWithSupabase(): Promise<void> {
   }
 }
 
-// Trigger background async sync with Supabase
-syncWithSupabase().catch(() => {});
+// Initial sync on boot
+syncWithSupabase(true).catch(() => {});
+
+// Periodic background sync every 15 seconds so frontend additions are immediately recognized
+const syncInterval = setInterval(() => {
+  syncWithSupabase(true).catch(() => {});
+}, 15000);
+if (syncInterval && typeof syncInterval.unref === 'function') {
+  syncInterval.unref();
+}
 
 export const IgnoreListStorage = {
   async getIgnoredPlayers(): Promise<string[]> {

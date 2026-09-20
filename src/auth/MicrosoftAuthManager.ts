@@ -73,7 +73,7 @@ export class MicrosoftAuthManager extends EventEmitter {
   constructor(options: AuthManagerOptions) {
     super();
     this.accountId = options.accountId;
-    this.profilesFolder = options.profilesFolder || `./profile/${this.accountId}`;
+    this.profilesFolder = TokenStorage.getLocalProfilesFolder(options.profilesFolder || this.accountId);
     this.authTitle = options.authTitle && options.authTitle !== '0000000048183522'
       ? options.authTitle
       : Titles.MinecraftNintendoSwitch;
