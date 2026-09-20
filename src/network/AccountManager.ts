@@ -87,6 +87,8 @@ export class AccountManager extends EventEmitter {
   private statusSyncTimer: NodeJS.Timer | null = null;
   private commandPollTimer: NodeJS.Timer | null = null;
   private addingAccounts: Set<string> = new Set();
+  private lastPushedTelemetry: Map<string, { fingerprint: string; timestamp: number }> = new Map();
+  private lastReconciliationTime: number = 0;
 
   constructor(appConfig: AppConfig) {
     super();
@@ -389,71 +391,98 @@ export class AccountManager extends EventEmitter {
   }
 
   private async pushStatus(): Promise<void> {
-    // 1. Reconcile accounts: auto-load any account moved/assigned to this node, unload any moved away
-    try {
-      const assignedRows = await getAccountsForNode(this.appConfig.nodeId);
-      const assignedIds = new Set(assignedRows.map(r => r.id));
+    const now = Date.now();
 
-      for (const row of assignedRows) {
-        if (!this.bots.has(row.id)) {
-          logger.info(`Auto-loading newly assigned account '${row.id}' for node '${this.appConfig.nodeId}'`, row.id);
-          await this.instantiateBot({
-            id: row.id,
-            email: row.email || '',
-            nodeId: this.appConfig.nodeId,
-            autoConnect: row.auto_connect === true,
-            offline: row.offline_mode ?? false,
-            profilesFolder: '',
-          });
-          if (row.auto_connect === true) {
-            this.scheduleAccountConnect(row.id);
+    // 1. Reconcile accounts: auto-load any account moved/assigned to this node, unload any moved away
+    // Throttled to run at most once every 60 seconds to prevent Supabase request flooding
+    if (now - this.lastReconciliationTime >= 60000) {
+      this.lastReconciliationTime = now;
+      try {
+        const assignedRows = await getAccountsForNode(this.appConfig.nodeId);
+        const assignedIds = new Set(assignedRows.map(r => r.id));
+
+        for (const row of assignedRows) {
+          if (!this.bots.has(row.id)) {
+            logger.info(`Auto-loading newly assigned account '${row.id}' for node '${this.appConfig.nodeId}'`, row.id);
+            await this.instantiateBot({
+              id: row.id,
+              email: row.email || '',
+              nodeId: this.appConfig.nodeId,
+              autoConnect: row.auto_connect === true,
+              offline: row.offline_mode ?? false,
+              profilesFolder: '',
+            });
+            if (row.auto_connect === true) {
+              this.scheduleAccountConnect(row.id);
+            }
           }
         }
-      }
 
-      for (const [id, bot] of this.bots.entries()) {
-        if (!assignedIds.has(id)) {
-          logger.info(`Account '${id}' no longer assigned to node '${this.appConfig.nodeId}'. Unloading...`, id);
-          this.joinScheduler.cancelJoin(id);
-          try { await bot.dispose(); } catch {}
-          this.bots.delete(id);
+        for (const [id, bot] of this.bots.entries()) {
+          if (!assignedIds.has(id)) {
+            logger.info(`Account '${id}' no longer assigned to node '${this.appConfig.nodeId}'. Unloading...`, id);
+            this.joinScheduler.cancelJoin(id);
+            try { await bot.dispose(); } catch {}
+            this.bots.delete(id);
+            this.lastPushedTelemetry.delete(id);
+          }
         }
+      } catch (err: any) {
+        logger.debug(`Account reconciliation: ${err?.message}`);
       }
-    } catch (err: any) {
-      logger.debug(`Account reconciliation: ${err?.message}`);
     }
 
-    // 2. Push telemetry for all active bots
+    // 2. Push telemetry for all active bots with diff-based change detection
     for (const [id, bot] of this.bots.entries()) {
       try {
         const pos = bot.currentPosition;
         const authIdent = bot.authManager?.getIdentity?.() || null;
+        const state = bot.getState();
+        const ign = bot.inGameIgn || '';
+        const gamertag = bot.xboxUsername || '';
+        const health = (bot as any).currentHealth ?? 20;
+        const roundedX = Math.round(pos.x);
+        const roundedY = Math.round(pos.y);
+        const roundedZ = Math.round(pos.z);
+        const savedSpot = bot.afkSpotTracker.getSavedSpot() || LocationStorage.getLocation(id);
+        const isAfkActive = savedSpot !== null && (bot.afkSpotTracker.isActive() || state === ConnectionState.CONNECTED) && !bot.afkSpotTracker.isMonitoringPaused();
+        const msaCode = bot.msaCodeData?.user_code ?? null;
+        const authStatus = authIdent?.status || 'IDLE';
+        const authError = bot.authErrorMessage ?? null;
 
         AccountManager.registerBotName(id);
-        if (bot.inGameIgn) AccountManager.registerBotName(bot.inGameIgn);
-        if (bot.xboxUsername) AccountManager.registerBotName(bot.xboxUsername);
+        if (ign) AccountManager.registerBotName(ign);
+        if (gamertag) AccountManager.registerBotName(gamertag);
         if (bot.runtimeEntityId) AccountManager.registerBotRuntimeId(bot.runtimeEntityId);
 
-        const savedSpot = bot.afkSpotTracker.getSavedSpot() || LocationStorage.getLocation(id);
-        const isAfkActive = savedSpot !== null && (bot.afkSpotTracker.isActive() || bot.getState() === ConnectionState.CONNECTED) && !bot.afkSpotTracker.isMonitoringPaused();
+        // Build telemetry fingerprint
+        const fingerprint = `${state}|${ign}|${gamertag}|${health}|${roundedX},${roundedY},${roundedZ}|${isAfkActive}|${msaCode}|${authStatus}|${authError}`;
+
+        const cached = this.lastPushedTelemetry.get(id);
+        // Skip updating Supabase if telemetry has not changed and last push was within 60 seconds
+        if (cached && cached.fingerprint === fingerprint && (now - cached.timestamp < 60000)) {
+          continue;
+        }
 
         await updateAccountFields(id, {
           node_id: this.appConfig.nodeId,
-          status: bot.getState(),
-          ign: bot.inGameIgn || '',
-          gamertag: bot.xboxUsername || '',
-          health: (bot as any).currentHealth ?? 20,
+          status: state,
+          ign: ign,
+          gamertag: gamertag,
+          health: health,
           pos_x: pos.x,
           pos_y: pos.y,
           pos_z: pos.z,
           afk_spot_active: isAfkActive,
           afk_spot: savedSpot,
-          msa_code: bot.msaCodeData?.user_code ?? null,
+          msa_code: msaCode,
           msa_url: bot.msaCodeData?.verification_uri ?? null,
           msa_direct_url: bot.msaCodeData?.direct_verification_uri ?? null,
-          auth_status: authIdent?.status || 'IDLE',
-          auth_error: bot.authErrorMessage ?? null,
+          auth_status: authStatus,
+          auth_error: authError,
         });
+
+        this.lastPushedTelemetry.set(id, { fingerprint, timestamp: now });
       } catch (err: any) {
         logger.debug(`Status sync [${id}]: ${err?.message}`);
       }

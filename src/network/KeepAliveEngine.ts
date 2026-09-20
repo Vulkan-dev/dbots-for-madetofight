@@ -30,6 +30,10 @@ export class KeepAliveEngine {
   private moveStepZ: number = 0;
   private getRuntimeEntityId: () => bigint | string | number;
 
+  public isGrounded: boolean = true;
+  public targetFloorY: number | null = null;
+  private floatingTicks: number = 0;
+
   private onLatencyBound: ((packet: any) => void) | null = null;
   private onTickSyncBound: ((packet: any) => void) | null = null;
   private onCorrectionBound: ((packet: any) => void) | null = null;
@@ -115,6 +119,51 @@ export class KeepAliveEngine {
     this.jumpTicksRemaining = 0;
     this.jumpCooldownTicks = 0;
     this.itemUseTicksRemaining = 0;
+  }
+
+  /**
+   * Completely halts physics and clears destination/action targets.
+   * Useful when arriving at home or after teleporting to avoid mid-air freezing.
+   */
+  public resetPhysicsAndClearTarget(): void {
+    this.moveTicksRemaining = 0;
+    this.moveStepX = 0;
+    this.moveStepZ = 0;
+    this.jumpTicksRemaining = 0;
+    this.jumpCooldownTicks = 0;
+    this.isContinuousJump = false;
+    this.lastJumpingState = false;
+    this.swingTicksRemaining = 0;
+    this.itemUseTicksRemaining = 0;
+    this.inputFlags.delete('jumping');
+    this.inputFlags.delete('jump_down');
+    this.inputFlags.delete('jump_current_raw');
+    this.inputFlags.delete('start_jumping');
+    this.inputFlags.delete('jump_pressed_raw');
+    this.inputFlags.delete('jump_released_raw');
+    this.inputFlags.delete('start_moving');
+  }
+
+  /**
+   * Safely handles teleport landing.
+   * Resets active momentum, updates position, and initiates safe descent if hovering in mid-air.
+   */
+  public handleTeleportLanding(pos: Vector3D, groundTargetY?: number): void {
+    this.position = { x: pos.x, y: pos.y, z: pos.z };
+    this.resetPhysicsAndClearTarget();
+
+    if (groundTargetY != null && pos.y > groundTargetY + 0.1) {
+      // Bot is floating above the expected ground block
+      this.isGrounded = false;
+      this.targetFloorY = groundTargetY;
+      this.floatingTicks = 0;
+      this.inputFlags.delete('vertical_collision');
+      logger.info(`Teleport landing detected bot floating at Y=${pos.y.toFixed(2)}, descending safely to ground Y=${groundTargetY.toFixed(2)}`, this.accountId);
+    } else {
+      this.isGrounded = true;
+      this.targetFloorY = null;
+      this.floatingTicks = 0;
+    }
   }
 
   private isSneakingState: boolean = false;
@@ -314,6 +363,7 @@ export class KeepAliveEngine {
     let inputDataArray: string[] | null = null;
 
     const hasDynamicActions =
+      !this.isGrounded ||
       this.jumpTicksRemaining > 0 ||
       this.moveTicksRemaining > 0 ||
       this.swingTicksRemaining > 0 ||
@@ -336,11 +386,35 @@ export class KeepAliveEngine {
       inputDataArray = KeepAliveEngine.DEFAULT_GROUND_INPUT as unknown as string[];
       deltaY = 0;
     } else {
-      // DYNAMIC PATH: Handle jumps, swings, sneak transitions
+      // DYNAMIC PATH: Handle jumps, swings, sneak transitions, mid-air descent
       const currentFlags = new Set(this.inputFlags);
 
-      // When standing on ground (not jumping), signal vertical_collision
-      if (this.jumpTicksRemaining <= 0) {
+      // Mid-air descent logic if floating upon teleport / home arrival
+      if (!this.isGrounded) {
+        currentFlags.delete('vertical_collision');
+        this.floatingTicks++;
+        if (this.targetFloorY != null) {
+          const descentStep = 0.15;
+          if (this.position.y > this.targetFloorY + descentStep) {
+            deltaY = -descentStep;
+            this.position.y = Number((this.position.y - descentStep).toFixed(4));
+          } else {
+            // Reached ground floor
+            deltaY = Number((this.targetFloorY - this.position.y).toFixed(4));
+            this.position.y = this.targetFloorY;
+            this.isGrounded = true;
+            this.targetFloorY = null;
+            this.floatingTicks = 0;
+            currentFlags.add('vertical_collision');
+          }
+        } else if (this.floatingTicks > 20) {
+          // Safety timeout: after 1 second without floor target, restore grounded state
+          this.isGrounded = true;
+          this.floatingTicks = 0;
+          currentFlags.add('vertical_collision');
+        }
+      } else if (this.jumpTicksRemaining <= 0) {
+        // When standing on ground (not jumping), signal vertical_collision
         currentFlags.add('vertical_collision');
         deltaY = 0;
       }
@@ -379,6 +453,7 @@ export class KeepAliveEngine {
           deltaY = 0;
           currentFlags.add('jump_released_raw');
           currentFlags.add('vertical_collision');
+          this.isGrounded = true;
           this.jumpCooldownTicks = 2; // 100ms pause on ground before next jump
         }
       } else if (this.jumpCooldownTicks > 0) {

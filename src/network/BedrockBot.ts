@@ -19,6 +19,7 @@ import { ActionController } from '../features/ActionController';
 import { discordLogger } from '../discord/DiscordLogger';
 import { Watchdog } from './Watchdog';
 import { KeepAliveEngine } from './KeepAliveEngine';
+import { IgnoreListStorage } from '../storage/IgnoreListStorage';
 import { sanitizeErrorMessage, isAzureWafBlock } from '../utils/ErrorSanitizer';
 
 export enum ConnectionState {
@@ -62,6 +63,8 @@ export class BedrockBot extends EventEmitter {
   public afkSpotTracker: AFKSpotTracker;
   public autoRespawn: AutoRespawn;
   public watchdog: Watchdog;
+  private lastTpacceptTime: number = 0;
+  private lastTpacceptPlayer: string = '';
   public notificationService: NotificationService;
   public keepAliveEngine: KeepAliveEngine | null = null;
   public actionController: ActionController;
@@ -381,7 +384,13 @@ export class BedrockBot extends EventEmitter {
     this.afkSpotTracker.setCallbacks(
       (cmd) => this.sendChat(cmd),
       () => this.currentPosition,
-      () => this.state === ConnectionState.CONNECTED
+      () => this.state === ConnectionState.CONNECTED,
+      () => {
+        if (this.keepAliveEngine) {
+          this.keepAliveEngine.resetPhysicsAndClearTarget();
+        }
+        this.actionController.resetAllStates();
+      }
     );
 
     // Auto-respawn callback (Instant respawn pipeline)
@@ -819,15 +828,36 @@ export class BedrockBot extends EventEmitter {
           const prevBlockY = Math.round(this.currentPosition.y);
           const prevBlockZ = Math.round(this.currentPosition.z);
 
+          const isTeleport =
+            packet.mode === 'teleport' ||
+            packet.mode === 1 ||
+            packet.mode === 2 ||
+            packet.teleportation_cause != null ||
+            Math.hypot(packet.position.x - this.currentPosition.x, packet.position.z - this.currentPosition.z) > 4;
+
           this.currentPosition.x = packet.position.x;
           this.currentPosition.y = packet.position.y;
           this.currentPosition.z = packet.position.z;
 
-          if (this.keepAliveEngine) {
-            this.keepAliveEngine.updatePosition(this.currentPosition);
-            if (packet.pitch != null && packet.yaw != null) {
-              this.keepAliveEngine.updateRotation(packet.pitch, packet.yaw, packet.head_yaw);
+          if (isTeleport) {
+            let groundTargetY: number | undefined = undefined;
+            const savedSpot = this.afkSpotTracker.getSavedSpot();
+            if (savedSpot) {
+              const distToSpot = Math.hypot(packet.position.x - savedSpot.x, packet.position.z - savedSpot.z);
+              if (distToSpot <= 10) {
+                groundTargetY = savedSpot.y;
+              }
             }
+            if (this.keepAliveEngine) {
+              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY);
+            }
+            this.actionController.resetAllStates();
+          } else if (this.keepAliveEngine) {
+            this.keepAliveEngine.updatePosition(this.currentPosition);
+          }
+
+          if (this.keepAliveEngine && packet.pitch != null && packet.yaw != null) {
+            this.keepAliveEngine.updateRotation(packet.pitch, packet.yaw, packet.head_yaw);
           }
 
           const newBlockX = Math.round(this.currentPosition.x);
@@ -1105,6 +1135,7 @@ export class BedrockBot extends EventEmitter {
         const message = packet.message || (packet.parameters ? packet.parameters.join(' ') : '');
         if (message) {
           logger.info(`[CHAT] [${sender}]: ${message}`, this.accountId);
+          this.handleTeleportRequest(packet);
         }
       } catch (err) {
         logger.debug('Error processing incoming text packet', this.accountId);
@@ -1140,6 +1171,107 @@ export class BedrockBot extends EventEmitter {
         this.handleConnectionFailure('Socket closed');
       }
     });
+  }
+
+  /**
+   * Automatically accepts incoming teleport requests from trusted / whitelisted players or fellow bots.
+   * Executes '/tpaccept <PlayerName>' immediately and falls back to '/tpaccept'.
+   */
+  public handleTeleportRequest(packet: any): void {
+    try {
+      const rawMessage = packet.message || '';
+      const params = Array.isArray(packet.parameters) ? packet.parameters : [];
+      const combinedText = `${rawMessage} ${params.join(' ')}`;
+      const cleanText = combinedText
+        .replace(/§[0-9a-fk-or]/gi, '')
+        .replace(/&[0-9a-fk-or]/gi, '')
+        .trim();
+
+      let requestingPlayer: string | null = null;
+
+      // 1. Standard Minecraft / EssentialsX / Spigot / Paper / DonutSMP request patterns:
+      // "<player> has requested to teleport to you"
+      // "<player> has requested that you teleport to them"
+      // "<player> wants to teleport to you"
+      // "<player> sent a teleport request"
+      const match1 = cleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport to you|has requested that you teleport to them|wants to teleport to you|sent a teleport request|has requested a teleport)/i);
+      if (match1 && match1[1]) {
+        requestingPlayer = match1[1];
+      }
+
+      // 2. Pattern: "Teleport request from <player>" or "tpa from <player>"
+      if (!requestingPlayer) {
+        const match2 = cleanText.match(/(?:teleport request from|tpa from|tpa request from)\s+([a-zA-Z0-9_.*]+)/i);
+        if (match2 && match2[1]) {
+          requestingPlayer = match2[1];
+        }
+      }
+
+      // 3. Pattern: "[!] <player> wants to teleport" or "[Teleport] <player> has requested..."
+      if (!requestingPlayer) {
+        const match3 = cleanText.match(/\[(?:!|teleport|tpa)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|has requested|sent a)/i);
+        if (match3 && match3[1]) {
+          requestingPlayer = match3[1];
+        }
+      }
+
+      // 4. Parameterized translation or generic /tpaccept notice:
+      if (!requestingPlayer && (cleanText.toLowerCase().includes('/tpaccept') || cleanText.toLowerCase().includes('teleport'))) {
+        for (const p of params) {
+          const strippedP = String(p).replace(/§[0-9a-fk-or]/gi, '').replace(/&[0-9a-fk-or]/gi, '').trim();
+          if (/^[a-zA-Z0-9_.*]{3,20}$/.test(strippedP) && strippedP.toLowerCase() !== 'server') {
+            requestingPlayer = strippedP;
+            break;
+          }
+        }
+        if (!requestingPlayer && packet.source_name && /^[a-zA-Z0-9_.*]{3,20}$/.test(packet.source_name) && packet.source_name.toLowerCase() !== 'server') {
+          requestingPlayer = packet.source_name;
+        }
+      }
+
+      if (!requestingPlayer) return;
+
+      const cleanPlayer = requestingPlayer.trim();
+      const isTrusted = IgnoreListStorage.isIgnored(cleanPlayer);
+      let isBot = false;
+      try {
+        const { AccountManager } = require('./AccountManager');
+        isBot = AccountManager.isKnownBot(cleanPlayer);
+      } catch {}
+
+      if (!isTrusted && !isBot) {
+        logger.debug(`Ignored teleport request from untrusted player: '${cleanPlayer}'`, this.accountId);
+        return;
+      }
+
+      // Debounce duplicate requests within 2 seconds
+      const now = Date.now();
+      if (now - this.lastTpacceptTime < 2000 && this.lastTpacceptPlayer.toLowerCase() === cleanPlayer.toLowerCase()) {
+        return;
+      }
+      this.lastTpacceptTime = now;
+      this.lastTpacceptPlayer = cleanPlayer;
+
+      logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request from trusted player: '${cleanPlayer}'`, this.accountId);
+      discordLogger.logAfkActivity(
+        this.accountId,
+        `🤝 **Auto Teleport Accepted**: Accepted teleport request from trusted player **${cleanPlayer}**`
+      );
+
+      // Execute in-game command: /tpaccept <player>
+      this.sendChat(`/tpaccept ${cleanPlayer}`);
+
+      // Also send fallback /tpaccept after 250ms in case server only accepts bare /tpaccept
+      setTimeout(() => {
+        try {
+          if (this.client && this.state === ConnectionState.CONNECTED) {
+            this.sendChat('/tpaccept');
+          }
+        } catch {}
+      }, 250);
+    } catch (err: any) {
+      logger.debug(`Error handling teleport request: ${err?.message}`, this.accountId);
+    }
   }
 
   private handleConnectionFailure(reason: string, minDelayMs?: number): void {

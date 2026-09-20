@@ -108,8 +108,8 @@ async function main() {
   manager.connectAutoConnectAccounts();
 
   // ── Start Supabase status sync & command polling ────────────────────────────
-  manager.startStatusSync(5000);
-  manager.startCommandPolling(2000);
+  manager.startStatusSync(15000);
+  manager.startCommandPolling(5000);
 
   // ── Web API server ──────────────────────────────────────────────────────────
   const webServer = new WebServer(manager, config);

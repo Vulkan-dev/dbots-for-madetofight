@@ -13,6 +13,7 @@ export class AFKSpotTracker {
   private executeCommandCallback: ((cmd: string) => void) | null = null;
   private getPositionCallback: (() => Vector3D) | null = null;
   private isConnectedCallback: (() => boolean) | null = null;
+  private onResetPhysicsCallback: (() => void) | null = null;
 
   private checkIntervalMs: number = 300000; // 5 minutes default
   private toleranceBlocks: number = 10.0; // 10.0 blocks tolerance range per user requirement
@@ -32,12 +33,16 @@ export class AFKSpotTracker {
   public setCallbacks(
     executeCmd: (cmd: string) => void,
     getPos: () => Vector3D,
-    isConnected?: () => boolean
+    isConnected?: () => boolean,
+    onResetPhysics?: () => void
   ): void {
     this.executeCommandCallback = executeCmd;
     this.getPositionCallback = getPos;
     if (isConnected) {
       this.isConnectedCallback = isConnected;
+    }
+    if (onResetPhysics) {
+      this.onResetPhysicsCallback = onResetPhysics;
     }
   }
 
@@ -203,6 +208,11 @@ export class AFKSpotTracker {
 
       // Execute in-game /home 1
       this.executeCommandCallback('/home 1');
+
+      // Clear any pending movement/pathfinding state upon enforcement
+      if (this.onResetPhysicsCallback) {
+        this.onResetPhysicsCallback();
+      }
 
       // Send alert to Discord log channel
       discordLogger.logAfkActivity(this.botName, logMsg);

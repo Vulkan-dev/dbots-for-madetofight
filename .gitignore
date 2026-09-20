@@ -42,6 +42,5 @@ VibeCurb-main/
 VibeCurb-main.zip
 config.yaml
 config.example.yaml
-tests/
 .my friends/
 src/utils/ngrokManager.ts
