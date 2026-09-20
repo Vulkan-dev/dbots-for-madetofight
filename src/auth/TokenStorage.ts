@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { logger } from '../utils/logger';
 import {
   saveAuthToken,
@@ -117,86 +118,100 @@ export class TokenStorage {
       fs.mkdirSync(folderPath, { recursive: true, mode: 0o700 });
     }
 
+    const legacyFolder = path.resolve(process.cwd(), 'profile', accountId);
+    if (!fs.existsSync(legacyFolder)) {
+      fs.mkdirSync(legacyFolder, { recursive: true, mode: 0o700 });
+    }
+
     // Clean up local temp folder and legacy ./profile/<id> folder
     this.sanitizeDirectory(folderPath);
-    const legacyFolder = path.resolve(process.cwd(), 'profile', accountId);
-    if (fs.existsSync(legacyFolder)) {
-      this.sanitizeDirectory(legacyFolder);
-    }
+    this.sanitizeDirectory(legacyFolder);
+
+    // Compute expected hash prefix for prismarine-auth (sha1(accountId).substring(0, 6))
+    const hashPrefix = crypto.createHash('sha1').update(accountId).digest('hex').substring(0, 6);
 
     // Try to restore saved tokens from Supabase
     try {
       const saved = await loadAuthToken(accountId);
       if (saved && saved.token_data) {
-        // Bundled format: all files in one JSON blob
+        let bundle: Record<string, any> = {};
         if (saved.file_name === '__bundle__') {
           if (this.validateJson(saved.token_data)) {
-            const bundled: Record<string, string> = JSON.parse(saved.token_data);
-            let restored = 0;
-            for (const [fileName, fileData] of Object.entries(bundled)) {
-              let jsonStr: string;
-              if (typeof fileData === 'string') {
-                jsonStr = fileData.trim();
-              } else if (typeof fileData === 'object' && fileData !== null) {
-                jsonStr = JSON.stringify(fileData, null, 2);
-              } else {
-                continue;
-              }
-              if (!this.validateJson(jsonStr)) continue;
-
-              const cleanName = path.basename(fileName).trim();
-              const filePath = path.join(folderPath, cleanName);
-              const legacyPath = path.join(legacyFolder, cleanName);
-
-              // If file is missing or invalid on disk, restore atomically
-              let needsRestore = true;
-              if (fs.existsSync(filePath)) {
-                try {
-                  const existing = fs.readFileSync(filePath, 'utf8');
-                  if (this.validateJson(existing)) {
-                    needsRestore = false;
-                  }
-                } catch {
-                  needsRestore = true;
-                }
-              }
-              if (needsRestore) {
-                const okTemp = this.atomicWriteJson(filePath, jsonStr);
-                const okLegacy = this.atomicWriteJson(legacyPath, jsonStr);
-                if (okTemp || okLegacy) {
-                  restored++;
-                }
-              }
-            }
-            if (restored > 0) {
-              logger.info(`Restored ${restored} auth token(s) for '${accountId}' from Supabase`, accountId);
-            }
+            bundle = JSON.parse(saved.token_data);
           }
         } else {
-          // Legacy single-file format
-          const jsonStr = typeof saved.token_data === 'string'
-            ? saved.token_data.trim()
-            : JSON.stringify(saved.token_data, null, 2);
-          if (this.validateJson(jsonStr)) {
-            const cleanName = path.basename(saved.file_name).trim();
-            const filePath = path.join(folderPath, cleanName);
-            const legacyPath = path.join(legacyFolder, cleanName);
-            let needsRestore = true;
-            if (fs.existsSync(filePath)) {
-              try {
-                const existing = fs.readFileSync(filePath, 'utf8');
-                if (this.validateJson(existing)) needsRestore = false;
-              } catch {}
-            }
-            if (needsRestore) {
-              this.atomicWriteJson(filePath, jsonStr);
+          bundle[saved.file_name] = saved.token_data;
+        }
+
+        let restored = 0;
+        for (const [fileName, fileData] of Object.entries(bundle)) {
+          let jsonStr: string;
+          if (typeof fileData === 'string') {
+            jsonStr = fileData.trim();
+          } else if (typeof fileData === 'object' && fileData !== null) {
+            jsonStr = JSON.stringify(fileData, null, 2);
+          } else {
+            continue;
+          }
+          if (!this.validateJson(jsonStr)) continue;
+
+          const rawKey = path.basename(fileName).trim();
+
+          // Identify standard cache suffix (e.g. 'live-cache.json', 'xbl-cache.json', etc.)
+          const baseNameMatch = rawKey.match(/(?:.*_)?([a-z0-9-]+-cache\.json)/i);
+          const cacheSuffix = baseNameMatch ? baseNameMatch[1] : (rawKey.endsWith('.json') ? rawKey : `${rawKey}.json`);
+
+          // Files to write:
+          // 1. Exactly rawKey
+          // 2. Hash-prefixed: `${hashPrefix}_${cacheSuffix}`
+          // 3. Un-prefixed: `${cacheSuffix}`
+          const targetFileNames = new Set<string>([
+            rawKey,
+            cacheSuffix,
+            `${hashPrefix}_${cacheSuffix}`,
+          ]);
+
+          for (const targetName of targetFileNames) {
+            const filePath = path.join(folderPath, targetName);
+            const legacyPath = path.join(legacyFolder, targetName);
+
+            const okTemp = this.atomicWriteJson(filePath, jsonStr);
+            const okLegacy = this.atomicWriteJson(legacyPath, jsonStr);
+            if (okTemp || okLegacy) {
+              restored++;
             }
           }
+        }
+
+        if (restored > 0) {
+          logger.info(`Restored ${restored} auth token cache file(s) for '${accountId}' from Supabase`, accountId);
         }
       }
     } catch (err: any) {
       logger.debug(`Token restore for '${accountId}': ${err?.message}`);
     }
+
+    // Cross-replicate any existing token cache files so hashPrefix is always present
+    try {
+      const allDirs = [folderPath, legacyFolder];
+      for (const dir of allDirs) {
+        if (!fs.existsSync(dir)) continue;
+        const entries = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+        for (const entry of entries) {
+          const baseMatch = entry.match(/(?:.*_)?([a-z0-9-]+-cache\.json)/i);
+          if (baseMatch) {
+            const suffix = baseMatch[1];
+            const prefixedName = `${hashPrefix}_${suffix}`;
+            const targetPrefixed = path.join(dir, prefixedName);
+            if (!fs.existsSync(targetPrefixed)) {
+              try {
+                fs.copyFileSync(path.join(dir, entry), targetPrefixed);
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch {}
 
     return folderPath;
   }
@@ -313,6 +328,12 @@ export class TokenStorage {
    * Only removes local files.
    */
   public static async transferTokens(accountId: string, newNodeId: string): Promise<void> {
+    // 1. Ensure any verified tokens on this node's disk are synced to Supabase FIRST
+    try {
+      await this.syncToSupabase(accountId, newNodeId);
+    } catch {}
+
+    // 2. Update Supabase record to point to newNodeId
     try {
       await transferAuthToken(accountId, newNodeId);
       logger.info(`Transferred auth tokens for '${accountId}' to node '${newNodeId}'`, accountId);
@@ -320,7 +341,7 @@ export class TokenStorage {
       logger.debug(`Token transfer for '${accountId}': ${err?.message}`);
     }
 
-    // Remove local temp files
+    // 3. Remove local temp files now that Supabase holds the verified cache
     const folderPath = path.join(PROFILES_BASE, accountId);
     if (fs.existsSync(folderPath)) {
       try { fs.rmSync(folderPath, { recursive: true, force: true }); } catch {}

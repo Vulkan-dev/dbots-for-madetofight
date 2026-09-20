@@ -581,10 +581,13 @@ export class WebServer {
     });
 
     // ── Connect ─────────────────────────────────────────────────────────────
-    this.app.post('/api/accounts/connect', (req, res) => {
-      const { accountId } = req.body;
+    this.app.post('/api/accounts/connect', async (req, res) => {
+      const { accountId, forceReload } = req.body;
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
       try {
+        if (!this.manager.getBot(accountId) || forceReload) {
+          await this.manager.loadAccountFromSupabase(accountId);
+        }
         const ok = this.manager.scheduleAccountConnect(accountId);
         res.json({ success: ok });
       } catch (err: any) {

@@ -129,6 +129,42 @@ export class AccountManager extends EventEmitter {
     }
   }
 
+  /**
+   * Loads a specific account from Supabase, restores its tokens to disk, and instantiates the bot.
+   */
+  public async loadAccountFromSupabase(accountId: string): Promise<BedrockBot | null> {
+    try {
+      const row = await getAccountById(accountId);
+      if (!row) {
+        logger.warn(`Cannot load account '${accountId}' from Supabase: record not found`, accountId);
+        return null;
+      }
+
+      // Download / ensure tokens from Supabase are written to disk
+      await TokenStorage.ensureProfilesFolder(accountId);
+
+      AccountManager.registerBotName(row.id);
+      if (row.ign) AccountManager.registerBotName(row.ign);
+      if (row.gamertag) AccountManager.registerBotName(row.gamertag);
+
+      let bot = this.bots.get(accountId);
+      if (!bot) {
+        bot = await this.instantiateBot({
+          id: row.id,
+          email: row.email || '',
+          nodeId: this.appConfig.nodeId,
+          autoConnect: row.auto_connect ?? true,
+          offline: row.offline_mode ?? false,
+          profilesFolder: '',
+        });
+      }
+      return bot;
+    } catch (err: any) {
+      logger.error(`loadAccountFromSupabase failed for '${accountId}': ${err?.message}`, accountId);
+      return null;
+    }
+  }
+
   public async instantiateBot(accountConfig: AccountConfig): Promise<BedrockBot> {
     if (this.bots.has(accountConfig.id)) {
       return this.bots.get(accountConfig.id)!;
@@ -529,7 +565,7 @@ export class AccountManager extends EventEmitter {
       case 'CONNECT':
         if (account_id) {
           if (!this.bots.has(account_id)) {
-            await this.loadAccountsFromSupabase();
+            await this.loadAccountFromSupabase(account_id);
           }
           this.scheduleAccountConnect(account_id);
         }
