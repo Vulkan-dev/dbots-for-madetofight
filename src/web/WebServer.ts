@@ -16,6 +16,8 @@ import {
   getAccountById,
   upsertAccount,
   getAccountsForNode,
+  exportAllBackupData,
+  importAllBackupData,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 import { discordLogger } from '../discord/DiscordLogger';
@@ -271,58 +273,53 @@ export class WebServer {
       }
     });
 
-    // ── Export auth tokens ──────────────────────────────────────────────────
-    this.app.get('/api/tokens/export', async (req, res) => {
+    // ── Export System Backup (accounts, nodes, tokens) ───────────────────────
+    this.app.get('/api/backup/export', async (req, res) => {
       try {
-        const queryAccountId = req.query.accountId ? String(req.query.accountId).trim() : null;
+        let accounts: any[] = [];
+        let nodes: any[] = [];
+        let tokens: any[] = [];
 
-        if (queryAccountId && queryAccountId !== 'all') {
-          // Export tokens for a single specific bot
-          const bot = this.manager.getBot(queryAccountId);
-          let accountRow: any = null;
-          try {
-            accountRow = await getAccountById(queryAccountId);
-          } catch {}
+        try {
+          const dbData = await exportAllBackupData();
+          accounts = dbData.accounts || [];
+          nodes = dbData.nodes || [];
+          tokens = dbData.tokens || [];
+        } catch (dbErr: any) {
+          logger.debug(`exportAllBackupData db fetch: ${dbErr?.message}`);
+        }
 
-          const tokens = await TokenStorage.getTokensForAccount(queryAccountId);
-          if (!tokens) {
-            return res.json({
-              success: false,
-              nodeId: this.config.nodeId,
-              exportedAt: new Date().toISOString(),
-              accounts: [],
-              error: `No active auth tokens found for account #${queryAccountId}. Make sure the account has logged in via /link first.`,
-            });
-          }
-
-          return res.json({
-            success: true,
-            nodeId: this.config.nodeId,
-            exportedAt: new Date().toISOString(),
-            totalExported: 1,
-            accounts: [
-              {
-                accountId: queryAccountId,
-                email: (bot as any)?.email || accountRow?.email || '',
-                gamertag: bot?.xboxUsername || bot?.inGameIgn || accountRow?.gamertag || '',
-                tokens: tokens,
-              },
-            ],
+        // Merge in local node if missing from nodes
+        if (!nodes.some((n: any) => n.id === this.config.nodeId)) {
+          nodes.push({
+            id: this.config.nodeId,
+            name: this.config.nodeName,
+            url: this.config.nodeUrl,
+            owner: this.config.nodeOwner,
+            status: 'online',
           });
         }
 
-        // Export all tokens on this node
-        const localBots = this.manager.getAllBots();
-        let accountRows: any[] = [];
-        try {
-          accountRows = await getAccountsForNode(this.config.nodeId);
-        } catch {}
+        // Merge in active local bots if missing from accounts
+        for (const bot of this.manager.getAllBots()) {
+          if (!accounts.some((a: any) => a.id === bot.accountId)) {
+            accounts.push({
+              id: bot.accountId,
+              node_id: this.config.nodeId,
+              email: (bot as any)?.email || '',
+              ign: bot.inGameIgn || '',
+              gamertag: bot.xboxUsername || '',
+              status: (bot as any)?.state || (bot as any)?.status || 'IDLE',
+              auto_connect: false,
+            });
+          }
+        }
 
+        // Ensure token records exist for accounts with local tokens on disk
         const accountIds = new Set<string>();
-        localBots.forEach(b => accountIds.add(b.accountId));
-        accountRows.forEach(r => accountIds.add(r.id));
+        accounts.forEach(a => accountIds.add(a.id));
+        this.manager.getAllBots().forEach(b => accountIds.add(b.accountId));
 
-        // Also check disk profile directories so imported or offline accounts are discovered
         const tempBase = path.join(os.tmpdir(), 'donut-bot-profiles');
         if (fs.existsSync(tempBase)) {
           try {
@@ -344,132 +341,132 @@ export class WebServer {
           } catch {}
         }
 
-        const exportedAccounts: any[] = [];
-
         for (const id of accountIds) {
-          const tokens = await TokenStorage.getTokensForAccount(id);
-          if (tokens && Object.keys(tokens).length > 0) {
-            const b = this.manager.getBot(id);
-            const row = accountRows.find(r => r.id === id);
-            exportedAccounts.push({
-              accountId: id,
-              email: (b as any)?.email || row?.email || '',
-              gamertag: b?.xboxUsername || b?.inGameIgn || row?.gamertag || '',
-              tokens: tokens,
-            });
+          if (!tokens.some((t: any) => t.account_id === id)) {
+            const diskTokens = await TokenStorage.getTokensForAccount(id);
+            if (diskTokens && Object.keys(diskTokens).length > 0) {
+              tokens.push({
+                account_id: id,
+                node_id: this.config.nodeId,
+                file_name: '__bundle__',
+                token_data: JSON.stringify(diskTokens),
+                updated_at: new Date().toISOString(),
+              });
+            }
+          }
+        }
+
+        const backup = {
+          version: 1,
+          type: 'donut_bots_backup',
+          exportedAt: new Date().toISOString(),
+          tables: {
+            accounts,
+            nodes,
+            tokens,
+          },
+          accounts,
+          nodes,
+          tokens,
+        };
+
+        res.json({
+          success: true,
+          exportedAt: backup.exportedAt,
+          counts: {
+            accounts: accounts.length,
+            nodes: nodes.length,
+            tokens: tokens.length,
+          },
+          backup,
+        });
+      } catch (err: any) {
+        logger.error(`API: /api/backup/export failed: ${err?.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Import System Backup (completely replaces/overwrites database records) ──
+    this.app.post('/api/backup/import', async (req, res) => {
+      try {
+        const body = req.body;
+        if (!body) {
+          return res.status(400).json({ success: false, error: 'Empty backup payload' });
+        }
+
+        const data = body.backup || body.tables || body;
+        const accounts: any[] = Array.isArray(data.accounts) ? data.accounts : [];
+        const nodes: any[] = Array.isArray(data.nodes) ? data.nodes : (Array.isArray(data.backend_nodes) ? data.backend_nodes : []);
+        const tokens: any[] = Array.isArray(data.tokens) ? data.tokens : (Array.isArray(data.auth_tokens) ? data.auth_tokens : []);
+
+        if (accounts.length === 0 && nodes.length === 0 && tokens.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid backup file. No accounts, nodes, or tokens found in payload.',
+          });
+        }
+
+        // 1. Overwrite database records in Supabase
+        let dbResult = { accountsCount: 0, nodesCount: 0, tokensCount: 0 };
+        try {
+          dbResult = await importAllBackupData({ accounts, nodes, tokens });
+        } catch (dbErr: any) {
+          logger.warn(`Supabase importAllBackupData notice: ${dbErr?.message}`);
+        }
+
+        // 2. Write tokens to disk so bots have immediate authentication without /link
+        let tokensWritten = 0;
+        for (const tok of tokens) {
+          const accId = String(tok.account_id || tok.accountId || tok.id || '').trim();
+          if (!accId) continue;
+          let parsedData = tok.token_data || tok.tokens || tok;
+          if (typeof parsedData === 'string') {
+            try {
+              parsedData = JSON.parse(parsedData);
+            } catch {}
+          }
+          if (parsedData && typeof parsedData === 'object') {
+            const resWrite = await TokenStorage.importTokensForAccount(accId, tok.node_id || this.config.nodeId, parsedData);
+            if (resWrite.success) tokensWritten++;
+          }
+        }
+
+        // 3. Instantiate / overwrite bots in AccountManager for this node
+        let botsInstantiated = 0;
+        for (const acc of accounts) {
+          const accId = String(acc.id || acc.accountId || '').trim();
+          if (!accId) continue;
+          const targetNode = acc.node_id || this.config.nodeId;
+          if (targetNode === this.config.nodeId || !this.manager.getBot(accId)) {
+            try {
+              await this.manager.instantiateBot({
+                id: accId,
+                email: acc.email || '',
+                nodeId: targetNode,
+                autoConnect: acc.auto_connect || false,
+                offline: acc.offline_mode || false,
+                profilesFolder: '',
+              });
+              botsInstantiated++;
+            } catch (botErr: any) {
+              logger.debug(`instantiateBot on import [${accId}]: ${botErr?.message}`);
+            }
           }
         }
 
         res.json({
           success: true,
-          nodeId: this.config.nodeId,
-          exportedAt: new Date().toISOString(),
-          totalExported: exportedAccounts.length,
-          accounts: exportedAccounts,
+          message: 'System backup imported and database records overwritten successfully',
+          counts: {
+            accounts: accounts.length,
+            nodes: nodes.length,
+            tokens: tokens.length,
+            tokensWrittenOnDisk: tokensWritten,
+            botsInstantiated: botsInstantiated,
+          },
         });
       } catch (err: any) {
-        logger.error(`API: /api/tokens/export failed: ${err?.message}`);
-        res.status(500).json({ success: false, error: err?.message });
-      }
-    });
-
-    // ── Import auth tokens ──────────────────────────────────────────────────
-    this.app.post('/api/tokens/import', async (req, res) => {
-      try {
-        const body = req.body;
-        if (!body) {
-          return res.status(400).json({ success: false, error: 'Empty import payload' });
-        }
-
-        // Normalize payload: can be { accounts: [...] }, Array [...], single { accountId, tokens }, or direct { [file]: ... }
-        let accountsToImport: any[] = [];
-
-        if (Array.isArray(body)) {
-          accountsToImport = body;
-        } else if (Array.isArray(body.accounts)) {
-          accountsToImport = body.accounts;
-        } else if (body.accountId && (body.tokens || typeof body === 'object')) {
-          accountsToImport = [body];
-        } else if (typeof body === 'object' && Object.keys(body).length > 0) {
-          const fallbackId = String(req.query.accountId || body.singleId || body.id || '').trim();
-          if (fallbackId) {
-            accountsToImport = [{
-              accountId: fallbackId,
-              email: body.email || '',
-              tokens: body.tokens || body,
-            }];
-          }
-        }
-
-        if (accountsToImport.length === 0) {
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid token format. Payload must include accountId and tokens.',
-          });
-        }
-
-        let importedCount = 0;
-        const errors: { accountId: string; error: string }[] = [];
-        const targetNode = this.config.nodeId;
-
-        for (const item of accountsToImport) {
-          const accId = String(item.accountId || item.id || '').trim();
-          if (!accId) {
-            errors.push({ accountId: 'unknown', error: 'Missing account ID' });
-            continue;
-          }
-
-          let tokenData = item.tokens || item;
-          if (tokenData.accountId && tokenData.tokens) {
-            tokenData = tokenData.tokens;
-          }
-
-          const importResult = await TokenStorage.importTokensForAccount(accId, targetNode, tokenData);
-          if (!importResult.success) {
-            errors.push({ accountId: accId, error: importResult.error || 'Failed to write token files' });
-            continue;
-          }
-
-          // Ensure account row exists in Supabase
-          try {
-            const email = (item.email || '').trim() || `${accId}@token.local`;
-            await upsertAccount({
-              id: accId,
-              node_id: targetNode,
-              email: email,
-              status: 'IDLE',
-              auto_connect: false,
-            });
-          } catch (err: any) {
-            logger.debug(`Import upsertAccount [${accId}]: ${err?.message}`);
-          }
-
-          // Instantiate bot in AccountManager if not present
-          try {
-            if (!this.manager.getBot(accId)) {
-              await this.manager.instantiateBot({
-                id: accId,
-                email: (item.email || '').trim(),
-                nodeId: targetNode,
-                autoConnect: false,
-                offline: false,
-                profilesFolder: '',
-              });
-            }
-          } catch (err: any) {
-            logger.debug(`Import instantiateBot [${accId}]: ${err?.message}`);
-          }
-
-          importedCount++;
-        }
-
-        res.json({
-          success: importedCount > 0,
-          importedCount: importedCount,
-          errors: errors.length > 0 ? errors : undefined,
-        });
-      } catch (err: any) {
-        logger.error(`API: /api/tokens/import failed: ${err?.message}`);
+        logger.error(`API: /api/backup/import failed: ${err?.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });

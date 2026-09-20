@@ -281,3 +281,78 @@ export async function getRegisteredNodeCategories(): Promise<Map<string, string>
   }
   return map;
 }
+
+// ─── System Backup & Restore ───────────────────────────────────────────────────
+export async function exportAllBackupData(): Promise<{
+  accounts: any[];
+  nodes: any[];
+  tokens: any[];
+}> {
+  const client = getSupabaseClient();
+  const [accRes, nodesRes, tokensRes] = await Promise.all([
+    client.from('accounts').select('*'),
+    client.from('backend_nodes').select('*'),
+    client.from('auth_tokens').select('*'),
+  ]);
+
+  if (accRes.error) logger.debug(`exportAllBackupData accounts error: ${accRes.error.message}`);
+  if (nodesRes.error) logger.debug(`exportAllBackupData nodes error: ${nodesRes.error.message}`);
+  if (tokensRes.error) logger.debug(`exportAllBackupData tokens error: ${tokensRes.error.message}`);
+
+  return {
+    accounts: accRes.data || [],
+    nodes: nodesRes.data || [],
+    tokens: tokensRes.data || [],
+  };
+}
+
+export async function importAllBackupData(backup: {
+  accounts?: any[];
+  nodes?: any[];
+  tokens?: any[];
+}): Promise<{
+  accountsCount: number;
+  nodesCount: number;
+  tokensCount: number;
+}> {
+  const client = getSupabaseClient();
+  const accounts = backup.accounts || [];
+  const nodes = backup.nodes || [];
+  const tokens = backup.tokens || [];
+
+  if (nodes.length > 0) {
+    for (const node of nodes) {
+      const cleanNode = { ...node };
+      delete cleanNode.created_at;
+      const { error } = await client.from('backend_nodes').upsert(cleanNode, { onConflict: 'id' });
+      if (error) logger.debug(`importAllBackupData node error [${node.id}]: ${error.message}`);
+    }
+  }
+
+  if (accounts.length > 0) {
+    for (const acc of accounts) {
+      const cleanAcc = { ...acc };
+      delete cleanAcc.created_at;
+      cleanAcc.updated_at = new Date().toISOString();
+      const { error } = await client.from('accounts').upsert(cleanAcc, { onConflict: 'id' });
+      if (error) logger.debug(`importAllBackupData account error [${acc.id}]: ${error.message}`);
+    }
+  }
+
+  if (tokens.length > 0) {
+    for (const tok of tokens) {
+      const cleanTok = { ...tok };
+      delete cleanTok.created_at;
+      cleanTok.updated_at = new Date().toISOString();
+      const { error } = await client.from('auth_tokens').upsert(cleanTok, { onConflict: 'account_id' });
+      if (error) logger.debug(`importAllBackupData token error [${tok.account_id}]: ${error.message}`);
+    }
+  }
+
+  return {
+    accountsCount: accounts.length,
+    nodesCount: nodes.length,
+    tokensCount: tokens.length,
+  };
+}
+
