@@ -134,8 +134,20 @@ export class TokenStorage {
             const bundled: Record<string, string> = JSON.parse(saved.token_data);
             let restored = 0;
             for (const [fileName, fileData] of Object.entries(bundled)) {
-              if (!this.validateJson(fileData)) continue;
-              const filePath = path.join(folderPath, fileName);
+              let jsonStr: string;
+              if (typeof fileData === 'string') {
+                jsonStr = fileData.trim();
+              } else if (typeof fileData === 'object' && fileData !== null) {
+                jsonStr = JSON.stringify(fileData, null, 2);
+              } else {
+                continue;
+              }
+              if (!this.validateJson(jsonStr)) continue;
+
+              const cleanName = path.basename(fileName).trim();
+              const filePath = path.join(folderPath, cleanName);
+              const legacyPath = path.join(legacyFolder, cleanName);
+
               // If file is missing or invalid on disk, restore atomically
               let needsRestore = true;
               if (fs.existsSync(filePath)) {
@@ -149,7 +161,9 @@ export class TokenStorage {
                 }
               }
               if (needsRestore) {
-                if (this.atomicWriteJson(filePath, fileData)) {
+                const okTemp = this.atomicWriteJson(filePath, jsonStr);
+                const okLegacy = this.atomicWriteJson(legacyPath, jsonStr);
+                if (okTemp || okLegacy) {
                   restored++;
                 }
               }
@@ -160,8 +174,13 @@ export class TokenStorage {
           }
         } else {
           // Legacy single-file format
-          if (this.validateJson(saved.token_data)) {
-            const filePath = path.join(folderPath, saved.file_name);
+          const jsonStr = typeof saved.token_data === 'string'
+            ? saved.token_data.trim()
+            : JSON.stringify(saved.token_data, null, 2);
+          if (this.validateJson(jsonStr)) {
+            const cleanName = path.basename(saved.file_name).trim();
+            const filePath = path.join(folderPath, cleanName);
+            const legacyPath = path.join(legacyFolder, cleanName);
             let needsRestore = true;
             if (fs.existsSync(filePath)) {
               try {
@@ -169,8 +188,8 @@ export class TokenStorage {
                 if (this.validateJson(existing)) needsRestore = false;
               } catch {}
             }
-            if (needsRestore && this.atomicWriteJson(filePath, saved.token_data)) {
-              logger.info(`Restored auth token for '${accountId}' from Supabase`, accountId);
+            if (needsRestore) {
+              this.atomicWriteJson(filePath, jsonStr);
             }
           }
         }
