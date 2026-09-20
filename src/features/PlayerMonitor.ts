@@ -29,6 +29,8 @@ export class PlayerMonitor {
   private notificationService: NotificationService;
   private trackedPlayers: Map<string, TrackedPlayer> = new Map();
   private isBotCheckCallback: ((name?: string, runtimeId?: any) => boolean) | null = null;
+  private lastAlertTimeByPlayer: Map<string, number> = new Map();
+  public static readonly SAME_PLAYER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes (300,000 ms)
 
   // Rate-limiting state for throttled debug logging of unexpected/malformed packets
   private lastMissingIdLogTime: number = 0;
@@ -46,6 +48,55 @@ export class PlayerMonitor {
     this.radiusChunks = radiusChunks;
     this.thresholdBlocks = thresholdBlocks;
     this.notificationService = notificationService;
+  }
+
+  /**
+   * Evaluates whether an alert should be dispatched for the given player.
+   * - New player: sends alert instantly.
+   * - Same player: rate-limited to at most once every 5 minutes (300,000 ms).
+   */
+  public shouldAlertPlayer(username: string): boolean {
+    if (!username || username.startsWith('Player_') || username === 'Unknown') {
+      return false;
+    }
+    const norm = username.toLowerCase().trim();
+    const now = Date.now();
+    this.cleanupOldAlertTimes(now);
+
+    const lastAlertTime = this.lastAlertTimeByPlayer.get(norm);
+    if (lastAlertTime === undefined) {
+      // Brand new player: send alert instantly
+      this.lastAlertTimeByPlayer.set(norm, now);
+      return true;
+    }
+
+    if (now - lastAlertTime >= PlayerMonitor.SAME_PLAYER_COOLDOWN_MS) {
+      // Same player, but 5 minutes have elapsed since last alert: send alert
+      this.lastAlertTimeByPlayer.set(norm, now);
+      return true;
+    }
+
+    // Same player within 5-minute cooldown window: suppress spam
+    return false;
+  }
+
+  private cleanupOldAlertTimes(now: number): void {
+    if (this.lastAlertTimeByPlayer.size > 200) {
+      const maxAge = 60 * 60 * 1000; // 1 hour
+      for (const [key, time] of this.lastAlertTimeByPlayer.entries()) {
+        if (now - time > maxAge) {
+          this.lastAlertTimeByPlayer.delete(key);
+        }
+      }
+    }
+  }
+
+  public resetAlertCooldown(username?: string): void {
+    if (username) {
+      this.lastAlertTimeByPlayer.delete(username.toLowerCase().trim());
+    } else {
+      this.lastAlertTimeByPlayer.clear();
+    }
   }
 
   public setBotCheckCallback(cb: (name?: string, runtimeId?: any) => boolean): void {
@@ -138,13 +189,15 @@ export class PlayerMonitor {
         return;
       }
 
-      if (this.notificationService) {
-        this.notificationService.notifyPlayerDetected({
-          name: player.username,
-          position,
-          distance,
-          accountId: this.accountId,
-        });
+      if (this.shouldAlertPlayer(player.username)) {
+        if (this.notificationService) {
+          this.notificationService.notifyPlayerDetected({
+            name: player.username,
+            position,
+            distance,
+            accountId: this.accountId,
+          });
+        }
       }
     } else {
       existing.position.x = position.x;
@@ -163,13 +216,32 @@ export class PlayerMonitor {
 
         existing.lastNotifiedPosition = { x: position.x, y: position.y, z: position.z };
         existing.lastNotifiedTime = Date.now();
-        if (this.notificationService) {
-          this.notificationService.notifyPlayerDetected({
-            name: username,
-            position,
-            distance,
-            accountId: this.accountId,
-          });
+        if (this.shouldAlertPlayer(existing.username)) {
+          if (this.notificationService) {
+            this.notificationService.notifyPlayerDetected({
+              name: username,
+              position,
+              distance,
+              accountId: this.accountId,
+            });
+          }
+        }
+      } else {
+        // Player was already known: check if 5 minutes have elapsed since last alert
+        if (this.isFellowBot(existing.username, runtimeId) || IgnoreListStorage.isIgnored(existing.username)) {
+          return;
+        }
+        if (this.shouldAlertPlayer(existing.username)) {
+          existing.lastNotifiedPosition = { x: position.x, y: position.y, z: position.z };
+          existing.lastNotifiedTime = Date.now();
+          if (this.notificationService) {
+            this.notificationService.notifyPlayerDetected({
+              name: existing.username,
+              position,
+              distance,
+              accountId: this.accountId,
+            });
+          }
         }
       }
     }
@@ -248,38 +320,27 @@ export class PlayerMonitor {
     player.position.z = newPosition.z;
 
     if (!MathUtils.isWithinChunkRadius(botPosition, newPosition, this.radiusChunks)) {
-      // Player walked outside monitored chunk radius: remove from tracking so if they return they are notified again
+      // Player walked outside monitored chunk radius: remove from active tracking
       this.trackedPlayers.delete(key);
       logger.debug(`Player ${player.username} (${key}) walked out of monitored radius`, this.accountId);
       return;
     }
 
     const currentDist = MathUtils.euclideanDistance(botPosition, newPosition);
-    const lastNotifiedDist = player.lastNotifiedPosition
-      ? MathUtils.euclideanDistance(botPosition, player.lastNotifiedPosition)
-      : Infinity;
     const now = Date.now();
-    const timeSinceLastNotified = now - (player.lastNotifiedTime || 0);
 
-    // Alert triggers:
-    // 1. Player closed distance towards bot by >= thresholdBlocks (default 5 blocks, e.g. 20m -> 15m -> 10m -> 5m)
-    // 2. High-threat proximity: Player is within danger range (<= 16 blocks) and >= 8 seconds since last alert
-    // 3. Persistent presence: Player remains in chunk radius and >= 30 seconds since last alert
-    const movedSignificantlyCloser = (lastNotifiedDist - currentDist) >= (this.thresholdBlocks || 5);
-    const closeThreatRepeat = currentDist <= 16 && timeSinceLastNotified >= 8000;
-    const periodicReminder = timeSinceLastNotified >= 30000;
+    // Skip fellow bots, ignored players, and unresolved placeholder names
+    if (this.isFellowBot(player.username, runtimeId) ||
+        IgnoreListStorage.isIgnored(player.username) ||
+        player.username.startsWith('Player_') ||
+        player.username === 'Unknown') {
+      return;
+    }
 
-    if (movedSignificantlyCloser || closeThreatRepeat || periodicReminder) {
+    // Only alert if new player or 5 minutes have elapsed for the same player (no spam)
+    if (this.shouldAlertPlayer(player.username)) {
       player.lastNotifiedPosition = { x: newPosition.x, y: newPosition.y, z: newPosition.z };
       player.lastNotifiedTime = now;
-
-      // Skip fellow bots, ignored players, and unresolved placeholder names
-      if (this.isFellowBot(player.username, runtimeId) ||
-          IgnoreListStorage.isIgnored(player.username) ||
-          player.username.startsWith('Player_') ||
-          player.username === 'Unknown') {
-        return;
-      }
 
       if (this.notificationService) {
         this.notificationService.notifyPlayerDetected({
@@ -315,5 +376,6 @@ export class PlayerMonitor {
 
   public clear(): void {
     this.trackedPlayers.clear();
+    this.lastAlertTimeByPlayer.clear();
   }
 }

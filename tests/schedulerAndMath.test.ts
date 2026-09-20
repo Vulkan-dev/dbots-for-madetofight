@@ -98,11 +98,21 @@ async function runTests() {
   assert(monitor.getTrackedPlayers()[0].position.x === 25, 'Tracked player position should update');
   assert(notifiedCount === 1, 'Should NOT send duplicate notifications on player move (no spam)');
 
-  // Player removed, then rejoins - should notify once again
+  // Player removed, then re-added within 5m - should NOT spam notify
   monitor.handlePlayerRemove(12345n);
   assert(monitor.getTrackedPlayers().length === 0, 'Tracked players should be 0 after remove');
   monitor.handlePlayerAdd(12345n, 'uuid-1', 'Steve', { x: 10, y: 64, z: 10 }, { x: 0, y: 64, z: 0 });
-  assert(notifiedCount === 2, 'Should notify once again when player rejoins/returns');
+  assert(notifiedCount === 1, 'Should NOT notify same player Steve again within 5m cooldown');
+
+  // After 5m cooldown elapses, player re-detected - should notify
+  const testNow = Date.now;
+  try {
+    Date.now = () => testNow() + 5 * 60 * 1000 + 1000;
+    monitor.handlePlayerAdd(12345n, 'uuid-1', 'Steve', { x: 10, y: 64, z: 10 }, { x: 0, y: 64, z: 0 });
+    assert(notifiedCount === 2, 'Should notify same player after 5m cooldown');
+  } finally {
+    Date.now = testNow;
+  }
 
   console.log('✔ PlayerMonitor single notification (no spam on move) & re-detection tests passed.');
 
@@ -600,6 +610,55 @@ async function runTests() {
   assert(alertFlags.playerAlertSent === true, 'PlayerMonitor must notify for non-ignored player');
   await IgnoreListStorage.removePlayer('SilentWorker');
   console.log('✔ PlayerMonitor ignore list suppression tests passed.');
+
+  // 18b. Test PlayerMonitor 5-minute spam cooldown & instant new player detection
+  const detectedEvents: string[] = [];
+  const mockNotificationService: any = {
+    notifyPlayerDetected: (data: any) => {
+      detectedEvents.push(data.name);
+    },
+  };
+  const rateLimitMonitor = new PlayerMonitor('testBot', 32, 2.0, mockNotificationService);
+
+  // 1. First player "Alex" enters -> INSTANT alert
+  rateLimitMonitor.handlePlayerAdd(101n, 'uuid-alex', 'Alex', { x: 10, y: 64, z: 10 }, { x: 0, y: 64, z: 0 });
+  assert(detectedEvents.length === 1 && detectedEvents[0] === 'Alex', 'New player Alex should trigger instant alert');
+
+  // 2. Same player Alex moves closer and further (high frequency movements) -> NO extra alerts (cooldown active)
+  rateLimitMonitor.handlePlayerMove(101n, { x: 5, y: 64, z: 5 }, { x: 0, y: 64, z: 0 });
+  rateLimitMonitor.handlePlayerMove(101n, { x: 2, y: 64, z: 2 }, { x: 0, y: 64, z: 0 });
+  rateLimitMonitor.handlePlayerMove(101n, { x: 1, y: 64, z: 1 }, { x: 0, y: 64, z: 0 });
+  assert(detectedEvents.length === 1, 'Same player Alex moving within 5m must NOT spam alerts');
+
+  // 3. Second player "Bob" enters -> INSTANT alert for new player Bob
+  rateLimitMonitor.handlePlayerAdd(102n, 'uuid-bob', 'Bob', { x: 8, y: 64, z: 8 }, { x: 0, y: 64, z: 0 });
+  assert(detectedEvents.length === 2 && detectedEvents[1] === 'Bob', 'New player Bob should trigger instant alert');
+
+  // 4. Bob moves around -> NO extra alerts
+  rateLimitMonitor.handlePlayerMove(102n, { x: 4, y: 64, z: 4 }, { x: 0, y: 64, z: 0 });
+  assert(detectedEvents.length === 2, 'Same player Bob moving within 5m must NOT spam alerts');
+
+  // 5. Alex steps outside chunk radius and comes back within 5m -> NO extra alert
+  rateLimitMonitor.handlePlayerMove(101n, { x: 1000, y: 64, z: 1000 }, { x: 0, y: 64, z: 0 }); // out of radius
+  rateLimitMonitor.handlePlayerAdd(101n, 'uuid-alex', 'Alex', { x: 5, y: 64, z: 5 }, { x: 0, y: 64, z: 0 }); // back in radius
+  assert(detectedEvents.length === 2, 'Border-hopping within 5m must NOT trigger duplicate alert');
+
+  // 6. Advance time by 5 minutes (300,001 ms) -> Alex moves -> alert dispatched!
+  const realDateNow = Date.now;
+  try {
+    const fakeTime = realDateNow() + (5 * 60 * 1000 + 1000);
+    Date.now = () => fakeTime;
+
+    rateLimitMonitor.handlePlayerMove(101n, { x: 6, y: 64, z: 6 }, { x: 0, y: 64, z: 0 });
+    assert(detectedEvents.length === 3 && detectedEvents[2] === 'Alex', 'Alex moving after 5 minutes should trigger alert');
+
+    // Moving again immediately after -> suppressed
+    rateLimitMonitor.handlePlayerMove(101n, { x: 7, y: 64, z: 7 }, { x: 0, y: 64, z: 0 });
+    assert(detectedEvents.length === 3, 'Alex moving immediately after 5m alert must be suppressed again');
+  } finally {
+    Date.now = realDateNow;
+  }
+  console.log('✔ PlayerMonitor 5-minute same-player rate limit & instant new player detection tests passed.');
 
   // 19. Test ContainerMonitor notification suppression for ignored player
   await IgnoreListStorage.addPlayer('FarmHelper');
