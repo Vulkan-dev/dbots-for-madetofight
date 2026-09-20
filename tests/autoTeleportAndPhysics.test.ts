@@ -81,23 +81,32 @@ async function runTests() {
     const cleanText = tc.text.replace(/§[0-9a-fk-or]/gi, '').trim();
     let extractedPlayer: string | null = null;
 
-    const match1 = cleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport|has requested that you teleport|has requested you to teleport|has requested you teleport|wants to teleport|wants you to teleport|sent a teleport request|sent you a teleport request|sent a teleport here request|sent you a teleport here request|sent a tpahere request|has sent a request to teleport you)/i);
+    const match1 = cleanText.match(/(?:\[[^\]]+\]|\([^)]+\)|[»>*-])*\s*([a-zA-Z0-9_.*]{3,20})\s+(?:has\s+|have\s+)?(?:sent(?:\s+you)?\s+(?:a\s+)?teleport(?:\s+|-)?(?:here\s+)?request|requested(?:\s+(?:that\s+you|you\s+to|you|to))?\s+teleport|wants(?:\s+you)?\s+to\s+teleport)/i);
     if (match1 && match1[1]) extractedPlayer = match1[1];
 
     if (!extractedPlayer) {
-      const match2 = cleanText.match(/(?:teleport request from|tpa request from|tpa from|teleport here request from|tpahere request from|tpahere from)\s+([a-zA-Z0-9_.*]+)/i);
+      const match2 = cleanText.match(/(?:teleport(?:\s+here)?\s+request\s+from|tpa(?:here)?\s+(?:request\s+)?from)\s+([a-zA-Z0-9_.*]{3,20})/i);
       if (match2 && match2[1]) extractedPlayer = match2[1];
     }
 
     if (!extractedPlayer) {
-      const match3 = cleanText.match(/\[(?:!|teleport|tpa|tpahere)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|wants you to teleport|has requested|sent a)/i);
+      const match3 = cleanText.match(/\[(?:!|teleport|tpa|tpahere)\]\s*(?:\[[^\]]+\]\s*)?([a-zA-Z0-9_.*]{3,20})\s+(?:wants|has|sent|requested)/i);
       if (match3 && match3[1]) extractedPlayer = match3[1];
     }
 
     assert(extractedPlayer?.toLowerCase() === tc.expectedPlayer.toLowerCase(), `Expected ${tc.expectedPlayer}, got ${extractedPlayer}`);
 
-    const isTrusted = IgnoreListStorage.isIgnored(extractedPlayer!);
-    const isBot = AccountManager.isKnownBot(extractedPlayer!);
+    let cleanPlayer = extractedPlayer!.trim().replace(/[.,:;!?]+$/, '').trim();
+    let isTrusted = IgnoreListStorage.isIgnored(cleanPlayer);
+    let isBot = AccountManager.isKnownBot(cleanPlayer);
+    if (!isTrusted && !isBot) {
+      const stripped = cleanPlayer.replace(/^[.*_~#@]+/, '').replace(/^\[[^\]]+\]\s*/, '').trim();
+      if (stripped && (IgnoreListStorage.isIgnored(stripped) || AccountManager.isKnownBot(stripped))) {
+        cleanPlayer = stripped;
+        isTrusted = true;
+      }
+    }
+
     const isAccepted = isTrusted || isBot;
     assert(isAccepted === tc.allowed, `Expected allowed=${tc.allowed} for player ${extractedPlayer}, got ${isAccepted}`);
   }

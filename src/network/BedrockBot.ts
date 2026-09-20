@@ -1252,15 +1252,15 @@ export class BedrockBot extends EventEmitter {
         } catch {}
       }
 
-      // 1. Standard DonutSMP / EssentialsX / Paper / CMI patterns (TPA & TPAHERE)
-      const match1 = parsedCleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:has requested to teleport|has requested that you teleport|has requested you to teleport|has requested you teleport|wants to teleport|wants you to teleport|sent a teleport request|sent you a teleport request|sent a teleport here request|sent you a teleport here request|sent a tpahere request|has sent a request to teleport you)/i);
+      // 1. Primary standard pattern: "[Prefix] Player [has/have] [sent you / requested / wants] ... teleport [here] request"
+      const match1 = parsedCleanText.match(/(?:\[[^\]]+\]|\([^)]+\)|[»>*-])*\s*([a-zA-Z0-9_.*]{3,20})\s+(?:has\s+|have\s+)?(?:sent(?:\s+you)?\s+(?:a\s+)?teleport(?:\s+|-)?(?:here\s+)?request|requested(?:\s+(?:that\s+you|you\s+to|you|to))?\s+teleport|wants(?:\s+you)?\s+to\s+teleport)/i);
       if (match1 && match1[1]) {
         requestingPlayer = match1[1];
       }
 
-      // 2. Pattern: "Teleport request from <player>", "tpa from <player>", "tpahere from <player>"
+      // 2. Pattern: "Teleport request from <player>", "Teleport here request from <player>", "tpa from <player>", "tpahere from <player>"
       if (!requestingPlayer) {
-        const match2 = parsedCleanText.match(/(?:teleport request from|tpa request from|tpa from|teleport here request from|tpahere request from|tpahere from)\s+([a-zA-Z0-9_.*]+)/i);
+        const match2 = parsedCleanText.match(/(?:teleport(?:\s+here)?\s+request\s+from|tpa(?:here)?\s+(?:request\s+)?from)\s+([a-zA-Z0-9_.*]{3,20})/i);
         if (match2 && match2[1]) {
           requestingPlayer = match2[1];
         }
@@ -1268,23 +1268,23 @@ export class BedrockBot extends EventEmitter {
 
       // 3. Pattern: "[!] <player> wants to teleport" or "[Teleport] <player> has requested..."
       if (!requestingPlayer) {
-        const match3 = parsedCleanText.match(/\[(?:!|teleport|tpa|tpahere)\]\s*([a-zA-Z0-9_.*]+)\s+(?:wants to teleport|wants you to teleport|has requested|sent a)/i);
+        const match3 = parsedCleanText.match(/\[(?:!|teleport|tpa|tpahere)\]\s*(?:\[[^\]]+\]\s*)?([a-zA-Z0-9_.*]{3,20})\s+(?:wants|has|sent|requested)/i);
         if (match3 && match3[1]) {
           requestingPlayer = match3[1];
         }
       }
 
-      // 4. Pattern: "/tpaccept <player>", "/tpahere accept", "/tpaccept" in instruction text
+      // 4. Pattern: "/tpaccept <player>", "/tpaccept" in instruction text
       if (!requestingPlayer) {
-        const match4 = parsedCleanText.match(/\/(?:tpaccept|tpahere|tpyes)\s+([a-zA-Z0-9_.*]+)/i);
-        if (match4 && match4[1] && !['to', 'type', 'accept', 'here'].includes(match4[1].toLowerCase())) {
+        const match4 = parsedCleanText.match(/\/tpaccept\s+([a-zA-Z0-9_.*]{3,20})/i);
+        if (match4 && match4[1] && !['to', 'type', 'accept', 'here', 'the'].includes(match4[1].toLowerCase())) {
           requestingPlayer = match4[1];
         }
       }
 
       // 5. Pattern: "<player> wants to teleport to your location" or "<player> wants you to teleport to their location"
       if (!requestingPlayer) {
-        const match5 = parsedCleanText.match(/([a-zA-Z0-9_.*]+)\s+(?:wants to teleport to your location|wants you to teleport to their location|requested you to teleport|requested you teleport|requested to teleport here)/i);
+        const match5 = parsedCleanText.match(/([a-zA-Z0-9_.*]{3,20})\s+(?:wants to teleport to your location|wants you to teleport to their location|requested you to teleport|requested you teleport|requested to teleport here)/i);
         if (match5 && match5[1]) {
           requestingPlayer = match5[1];
         }
@@ -1306,13 +1306,27 @@ export class BedrockBot extends EventEmitter {
 
       if (!requestingPlayer) return;
 
-      const cleanPlayer = requestingPlayer.trim();
-      const isTrusted = IgnoreListStorage.isIgnored(cleanPlayer);
+      let cleanPlayer = requestingPlayer.trim().replace(/[.,:;!?]+$/, '').trim();
+      let isTrusted = IgnoreListStorage.isIgnored(cleanPlayer);
       let isBot = false;
+      let AccountManagerMod: any = null;
       try {
-        const { AccountManager } = require('./AccountManager');
-        isBot = AccountManager.isKnownBot(cleanPlayer);
+        AccountManagerMod = require('./AccountManager').AccountManager;
+        if (AccountManagerMod) {
+          isBot = AccountManagerMod.isKnownBot(cleanPlayer);
+        }
       } catch {}
+
+      // If not initially matched, strip rank/platform prefixes (e.g. *, ., _, [VIP], [Donut]) and retry
+      if (!isTrusted && !isBot) {
+        const stripped = cleanPlayer.replace(/^[.*_~#@]+/, '').replace(/^\[[^\]]+\]\s*/, '').trim();
+        if (stripped) {
+          if (IgnoreListStorage.isIgnored(stripped) || (AccountManagerMod && AccountManagerMod.isKnownBot(stripped))) {
+            cleanPlayer = stripped;
+            isTrusted = true;
+          }
+        }
+      }
 
       if (!isTrusted && !isBot) {
         logger.debug(`Ignored teleport request from untrusted player: '${cleanPlayer}'`, this.accountId);
@@ -1327,9 +1341,9 @@ export class BedrockBot extends EventEmitter {
       this.lastTpacceptTime = now;
       this.lastTpacceptPlayer = cleanPlayer;
 
-      logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request (TPA/TPAHERE) from trusted player: '${cleanPlayer}'`, this.accountId);
+      logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request (TPA/TPAHERE) from trusted player: '${cleanPlayer}' via /tpaccept`, this.accountId);
 
-      // Execute in-game commands: /tpaccept <player>, fallback /tpaccept, /tpahere accept, /tpa accept, /tpyes
+      // Execute in-game commands: /tpaccept <player>, fallback /tpaccept
       this.sendChat(`/tpaccept ${cleanPlayer}`);
 
       setTimeout(() => {
@@ -1338,31 +1352,7 @@ export class BedrockBot extends EventEmitter {
             this.sendChat('/tpaccept');
           }
         } catch {}
-      }, 250);
-
-      setTimeout(() => {
-        try {
-          if (this.client && this.state === ConnectionState.CONNECTED) {
-            this.sendChat('/tpahere accept');
-          }
-        } catch {}
-      }, 500);
-
-      setTimeout(() => {
-        try {
-          if (this.client && this.state === ConnectionState.CONNECTED) {
-            this.sendChat('/tpa accept');
-          }
-        } catch {}
-      }, 750);
-
-      setTimeout(() => {
-        try {
-          if (this.client && this.state === ConnectionState.CONNECTED) {
-            this.sendChat('/tpyes');
-          }
-        } catch {}
-      }, 1000);
+      }, 300);
     } catch (err: any) {
       logger.debug(`Error handling teleport request: ${err?.message}`, this.accountId);
     }
