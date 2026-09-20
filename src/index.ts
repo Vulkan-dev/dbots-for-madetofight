@@ -15,6 +15,7 @@ import {
   getNodeSettings,
   insertCommand,
   getAllNodes,
+  syncToSecondarySupabase,
 } from './database/SupabaseClient';
 
 import { sanitizeErrorMessage } from './utils/ErrorSanitizer';
@@ -123,6 +124,31 @@ async function main() {
       logger.debug(`Heartbeat failed: ${err.message}`);
     }
   }, 30000);
+
+  // ── Dual Supabase Automated 24-Hour Backup ─────────────────────────────────
+  if (config.secondarySupabase) {
+    logger.info('Dual Supabase system active — secondary backup configured');
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+    // Initial sync after 60 seconds of startup to ensure all initial boots/tokens are settled
+    setTimeout(async () => {
+      try {
+        await syncToSecondarySupabase();
+      } catch (err: any) {
+        logger.warn(`Initial secondary backup failed: ${err?.message}`);
+      }
+    }, 60000);
+
+    // Recurring 24-hour backup
+    setInterval(async () => {
+      try {
+        logger.info('Executing scheduled 24-hour Dual Supabase backup...');
+        await syncToSecondarySupabase();
+      } catch (err: any) {
+        logger.error(`Scheduled 24-hour secondary backup error: ${err?.message}`);
+      }
+    }, TWENTY_FOUR_HOURS_MS);
+  }
 
   // ── Discord Bot (only on master node) ──────────────────────────────────────
   let discordBot: DiscordBot | null = null;

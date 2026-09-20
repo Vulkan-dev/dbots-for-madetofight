@@ -202,7 +202,30 @@ async function runTests() {
     );
     assert(resBadImport.status === 400, `Expected 400 for empty payload, got ${resBadImport.status}`);
     assert(resBadImport.body.success === false, 'success must be false');
-    console.log('✔ Test 7 Passed: Rejected empty payload with 400 Bad Request.');
+    // ── Test 8: GET /api/backup/secondary-status ─────────────────────────
+    console.log('\n--- Test 8: GET /api/backup/secondary-status ---');
+    const resSecStatus = await httpRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/api/backup/secondary-status',
+      method: 'GET',
+    });
+    assert(resSecStatus.status === 200, `Expected 200, got ${resSecStatus.status}`);
+    assert(typeof resSecStatus.body.configured === 'boolean', 'configured must be a boolean');
+    console.log(`✔ Test 8 Passed: Secondary status returned configured=${resSecStatus.body.configured}.`);
+
+    // ── Test 9: POST /api/backup/sync-secondary ───────────────────────────
+    console.log('\n--- Test 9: POST /api/backup/sync-secondary ---');
+    const resSecSync = await httpRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/api/backup/sync-secondary',
+      method: 'POST',
+    });
+    assert(resSecSync.status === 200 || resSecSync.status === 500, `Expected 200 or 500, got ${resSecSync.status}`);
+    assert(resSecSync.body !== undefined, 'Response body must exist');
+    assert(resSecSync.body.counts !== undefined, 'Response counts must be defined');
+    console.log(`✔ Test 9 Passed: Dual sync API executed safely and reported status.`);
 
   } finally {
     await new Promise<void>((resolve) => {

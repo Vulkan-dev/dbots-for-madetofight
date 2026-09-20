@@ -53,10 +53,17 @@ export interface AppConfig {
   nodeOwner: string;
   nodeUrl: string; // This Railway service's public URL (set manually in env or auto via RAILWAY_STATIC_URL)
 
-  // Supabase
+  // Supabase (Primary)
   supabase: {
     url: string;
     serviceRoleKey: string;
+  };
+
+  // Secondary Supabase (Dual Supabase backup target)
+  secondarySupabase?: {
+    url: string;
+    serviceRoleKey: string;
+    anonKey?: string;
   };
 
   // Minecraft server
@@ -150,6 +157,12 @@ export function loadConfig(): AppConfig {
       url: requireEnv('SUPABASE_URL'),
       serviceRoleKey: requireEnv('SUPABASE_SERVICE_ROLE_KEY'),
     },
+
+    secondarySupabase: process.env.SECONDARY_SUPABASE_URL ? {
+      url: process.env.SECONDARY_SUPABASE_URL.trim(),
+      serviceRoleKey: (process.env.SECONDARY_SUPABASE_SERVICE_ROLE_KEY || '').trim(),
+      anonKey: (process.env.SECONDARY_SUPABASE_ANON_KEY || '').trim(),
+    } : undefined,
 
     server: {
       host: optionalEnv('SERVER_HOST', 'donutsmp.net'),

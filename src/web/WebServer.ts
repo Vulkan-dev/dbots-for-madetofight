@@ -18,6 +18,8 @@ import {
   getAccountsForNode,
   exportAllBackupData,
   importAllBackupData,
+  syncToSecondarySupabase,
+  getLastSecondarySyncStatus,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 import { discordLogger } from '../discord/DiscordLogger';
@@ -469,6 +471,37 @@ export class WebServer {
         logger.error(`API: /api/backup/import failed: ${err?.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
+    });
+
+    // ── Sync to Secondary Supabase (Backup All) ──────────────────────────────
+    this.app.post('/api/backup/sync-secondary', async (req, res) => {
+      try {
+        const result = await syncToSecondarySupabase();
+        if (result.success) {
+          res.json({
+            success: true,
+            message: 'All data backed up to secondary Supabase successfully (excluding logs and junk files)',
+            counts: result.counts,
+          });
+        } else {
+          res.status(500).json({
+            success: false,
+            error: result.error || 'Failed to sync to secondary Supabase',
+            counts: result.counts,
+          });
+        }
+      } catch (err: any) {
+        logger.error(`API: /api/backup/sync-secondary failed: ${err?.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Get Secondary Supabase Sync Status ──────────────────────────────────
+    this.app.get('/api/backup/secondary-status', (_req, res) => {
+      res.json({
+        configured: !!(process.env.SECONDARY_SUPABASE_URL && process.env.SECONDARY_SUPABASE_SERVICE_ROLE_KEY),
+        lastSync: getLastSecondarySyncStatus(),
+      });
     });
 
     // ── Connect ─────────────────────────────────────────────────────────────
