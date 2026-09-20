@@ -199,13 +199,11 @@ export class KeepAliveEngine {
       this.targetFloorY = groundTargetY;
       this.floatingTicks = 0;
       this.inputFlags.delete('vertical_collision');
-      logger.info(`Teleport landing detected bot floating at Y=${pos.y.toFixed(2)}, descending safely to ground Y=${groundTargetY.toFixed(2)}`, this.accountId);
     } else if (serverOnGround === false) {
       this.isGrounded = false;
       this.targetFloorY = null;
       this.floatingTicks = 0;
       this.inputFlags.delete('vertical_collision');
-      logger.info(`Teleport landing in mid-air (on_ground=false) at Y=${pos.y.toFixed(2)}, falling with gravity`, this.accountId);
     } else {
       this.isGrounded = true;
       this.targetFloorY = null;
