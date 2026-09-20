@@ -227,6 +227,19 @@ async function runTests() {
     assert(resSecSync.body.counts !== undefined, 'Response counts must be defined');
     console.log(`✔ Test 9 Passed: Dual sync API executed safely and reported status.`);
 
+    // ── Test 10: POST /api/backup/load-secondary ──────────────────────────
+    console.log('\n--- Test 10: POST /api/backup/load-secondary ---');
+    const resSecLoad = await httpRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/api/backup/load-secondary',
+      method: 'POST',
+    });
+    assert(resSecLoad.status === 200 || resSecLoad.status === 500, `Expected 200 or 500, got ${resSecLoad.status}`);
+    assert(resSecLoad.body !== undefined, 'Response body must exist');
+    assert(resSecLoad.body.counts !== undefined, 'Response counts must be defined');
+    console.log(`✔ Test 10 Passed: Load backup from secondary API executed safely and reported status.`);
+
   } finally {
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());

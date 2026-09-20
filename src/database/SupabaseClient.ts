@@ -550,4 +550,167 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
   }
 }
 
+/**
+ * Loads all backup data from Secondary Supabase and restores it into Primary Supabase.
+ * Returns the counts and full data of all restored records.
+ */
+export async function loadFromSecondarySupabase(secondaryConfig?: { url: string; serviceRoleKey: string }): Promise<{
+  success: boolean;
+  counts: {
+    nodes: number;
+    accounts: number;
+    tokens: number;
+    settings: number;
+    permissions: number;
+    ignoreList: number;
+  };
+  data: {
+    nodes: any[];
+    accounts: any[];
+    tokens: any[];
+    settings: any[];
+    permissions: any[];
+    ignoreList: any[];
+  };
+  error?: string;
+}> {
+  const emptyCounts = { nodes: 0, accounts: 0, tokens: 0, settings: 0, permissions: 0, ignoreList: 0 };
+  const emptyData = { nodes: [], accounts: [], tokens: [], settings: [], permissions: [], ignoreList: [] };
+
+  const secondary = getSecondarySupabaseClient(secondaryConfig);
+  if (!secondary) {
+    const msg = 'Secondary Supabase is not configured (missing SECONDARY_SUPABASE_URL or SECONDARY_SUPABASE_SERVICE_ROLE_KEY)';
+    logger.warn(msg);
+    return { success: false, counts: emptyCounts, data: emptyData, error: msg };
+  }
+
+  let primary: SupabaseClient;
+  try {
+    primary = getSupabaseClient();
+  } catch (err: any) {
+    const msg = `Primary Supabase client unavailable: ${err?.message}`;
+    logger.warn(msg);
+    return { success: false, counts: emptyCounts, data: emptyData, error: msg };
+  }
+
+  logger.info('Starting Load Backup from Secondary Supabase into Primary Database...');
+  const counts = { nodes: 0, accounts: 0, tokens: 0, settings: 0, permissions: 0, ignoreList: 0 };
+  const loadedData: { nodes: any[]; accounts: any[]; tokens: any[]; settings: any[]; permissions: any[]; ignoreList: any[] } = {
+    nodes: [],
+    accounts: [],
+    tokens: [],
+    settings: [],
+    permissions: [],
+    ignoreList: [],
+  };
+
+  try {
+    // 1. Nodes (backend_nodes)
+    try {
+      const { data: nodes, error: nErr } = await secondary.from('backend_nodes').select('*');
+      if (!nErr && nodes && nodes.length > 0) {
+        loadedData.nodes = nodes;
+        for (const n of nodes) {
+          const clean = { ...n };
+          delete clean.created_at;
+          const { error } = await primary.from('backend_nodes').upsert(clean, { onConflict: 'id' });
+          if (!error) counts.nodes++;
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary backend_nodes: ${err?.message}`);
+    }
+
+    // 2. Accounts
+    try {
+      const { data: accounts, error: aErr } = await secondary.from('accounts').select('*');
+      if (!aErr && accounts && accounts.length > 0) {
+        loadedData.accounts = accounts;
+        for (const acc of accounts) {
+          const clean = { ...acc };
+          delete clean.created_at;
+          clean.updated_at = new Date().toISOString();
+          const { error } = await primary.from('accounts').upsert(clean, { onConflict: 'id' });
+          if (!error) counts.accounts++;
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary accounts: ${err?.message}`);
+    }
+
+    // 3. Auth Tokens
+    try {
+      const { data: tokens, error: tErr } = await secondary.from('auth_tokens').select('*');
+      if (!tErr && tokens && tokens.length > 0) {
+        loadedData.tokens = tokens;
+        for (const tok of tokens) {
+          if (!tok.token_data || typeof tok.token_data !== 'string' || tok.token_data.length < 10) continue;
+          const clean = { ...tok };
+          delete clean.created_at;
+          clean.updated_at = new Date().toISOString();
+          const { error } = await primary.from('auth_tokens').upsert(clean, { onConflict: 'account_id' });
+          if (!error) counts.tokens++;
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary auth_tokens: ${err?.message}`);
+    }
+
+    // 4. Node Settings
+    try {
+      const { data: settings, error: sErr } = await secondary.from('node_settings').select('*');
+      if (!sErr && settings && settings.length > 0) {
+        loadedData.settings = settings;
+        for (const set of settings) {
+          const clean = { ...set };
+          clean.updated_at = new Date().toISOString();
+          const { error } = await primary.from('node_settings').upsert(clean, { onConflict: 'node_id' });
+          if (!error) counts.settings++;
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary node_settings: ${err?.message}`);
+    }
+
+    // 5. Permissions
+    try {
+      const { data: perms, error: pErr } = await secondary.from('permissions').select('*');
+      if (!pErr && perms && perms.length > 0) {
+        loadedData.permissions = perms;
+        for (const p of perms) {
+          const clean = { ...p };
+          delete clean.created_at;
+          const { error } = await primary.from('permissions').upsert(clean, { onConflict: 'user_id' });
+          if (!error) counts.permissions++;
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary permissions: ${err?.message}`);
+    }
+
+    // 6. Ignore List
+    try {
+      const { data: ignore, error: iErr } = await secondary.from('ignore_list').select('*');
+      if (!iErr && ignore && ignore.length > 0) {
+        loadedData.ignoreList = ignore;
+        for (const ig of ignore) {
+          const clean = { ...ig };
+          delete clean.created_at;
+          const { error } = await primary.from('ignore_list').upsert(clean, { onConflict: 'player_name' });
+          if (!error) counts.ignoreList++;
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary ignore_list: ${err?.message}`);
+    }
+
+    logger.info(`Load Backup from Secondary Supabase completed: Restored ${counts.accounts} accounts, ${counts.nodes} nodes, ${counts.tokens} tokens, ${counts.settings} settings into Primary Supabase.`);
+    return { success: true, counts, data: loadedData };
+  } catch (err: any) {
+    logger.error(`Load Backup from Secondary Supabase failed: ${err?.message}`);
+    return { success: false, counts, data: loadedData, error: err?.message };
+  }
+}
+
+
 

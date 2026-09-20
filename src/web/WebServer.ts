@@ -19,6 +19,7 @@ import {
   exportAllBackupData,
   importAllBackupData,
   syncToSecondarySupabase,
+  loadFromSecondarySupabase,
   getLastSecondarySyncStatus,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
@@ -492,6 +493,81 @@ export class WebServer {
         }
       } catch (err: any) {
         logger.error(`API: /api/backup/sync-secondary failed: ${err?.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Load Backup from Secondary Supabase ───────────────────────────────────
+    this.app.post('/api/backup/load-secondary', async (req, res) => {
+      try {
+        const result = await loadFromSecondarySupabase();
+        if (!result.success) {
+          return res.status(500).json({
+            success: false,
+            error: result.error || 'Failed to load backup from secondary Supabase',
+            counts: result.counts,
+          });
+        }
+
+        const accounts = result.data?.accounts || [];
+        const tokens = result.data?.tokens || [];
+
+        // 1. Write restored tokens to disk
+        let tokensWritten = 0;
+        for (const tok of tokens) {
+          const accId = String(tok.account_id || tok.accountId || tok.id || '').trim();
+          if (!accId) continue;
+          let parsedData = tok.token_data || tok.tokens || tok;
+          if (typeof parsedData === 'string') {
+            try {
+              parsedData = JSON.parse(parsedData);
+            } catch {}
+          }
+          if (parsedData && typeof parsedData === 'object') {
+            const resWrite = await TokenStorage.importTokensForAccount(accId, tok.node_id || this.config.nodeId, parsedData);
+            if (resWrite.success) tokensWritten++;
+          }
+        }
+
+        // 2. Instantiate restored accounts in AccountManager
+        let botsInstantiated = 0;
+        for (const acc of accounts) {
+          const accId = String(acc.id || acc.accountId || '').trim();
+          if (!accId) continue;
+          const targetNode = acc.node_id || this.config.nodeId;
+          if (targetNode === this.config.nodeId || !this.manager.getBot(accId)) {
+            try {
+              await this.manager.instantiateBot({
+                id: accId,
+                email: acc.email || '',
+                nodeId: targetNode,
+                autoConnect: acc.auto_connect || false,
+                offline: acc.offline_mode || false,
+                profilesFolder: '',
+              });
+              botsInstantiated++;
+            } catch (botErr: any) {
+              logger.debug(`instantiateBot on load-secondary [${accId}]: ${botErr?.message}`);
+            }
+          }
+        }
+
+        // 3. Trigger ignore list refresh
+        try {
+          await IgnoreListStorage.getIgnoredPlayers();
+        } catch {}
+
+        res.json({
+          success: true,
+          message: 'Backup loaded from Secondary Supabase and restored to Primary Supabase successfully',
+          counts: {
+            ...result.counts,
+            tokensWrittenOnDisk: tokensWritten,
+            botsInstantiated,
+          },
+        });
+      } catch (err: any) {
+        logger.error(`API: /api/backup/load-secondary failed: ${err?.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });
