@@ -129,7 +129,7 @@ export class AccountManager extends EventEmitter {
     }
   }
 
-  private async instantiateBot(accountConfig: AccountConfig): Promise<BedrockBot> {
+  public async instantiateBot(accountConfig: AccountConfig): Promise<BedrockBot> {
     if (this.bots.has(accountConfig.id)) {
       return this.bots.get(accountConfig.id)!;
     }

@@ -1,8 +1,12 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import express from 'express';
 import { AppConfig, applyNodeSettings } from '../config';
 import { AccountManager } from '../network/AccountManager';
 import { PermissionStorage } from '../storage/PermissionStorage';
 import { IgnoreListStorage } from '../storage/IgnoreListStorage';
+import { TokenStorage } from '../auth/TokenStorage';
 import {
   upsertNodeSettings,
   getNodeSettings,
@@ -10,6 +14,8 @@ import {
   getAllNodes,
   updateAccountFields,
   getAccountById,
+  upsertAccount,
+  getAccountsForNode,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 import { discordLogger } from '../discord/DiscordLogger';
@@ -35,7 +41,7 @@ export class WebServer {
   }
 
   private configureMiddleware(): void {
-    this.app.use(express.json({ limit: '1mb' }));
+    this.app.use(express.json({ limit: '10mb' }));
 
     // CORS — normalize trailing slashes on both sides
     this.app.use((req, res, next) => {
@@ -261,6 +267,209 @@ export class WebServer {
         });
         res.json({ success: true });
       } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Export auth tokens ──────────────────────────────────────────────────
+    this.app.get('/api/tokens/export', async (req, res) => {
+      try {
+        const queryAccountId = req.query.accountId ? String(req.query.accountId).trim() : null;
+
+        if (queryAccountId && queryAccountId !== 'all') {
+          // Export tokens for a single specific bot
+          const bot = this.manager.getBot(queryAccountId);
+          let accountRow: any = null;
+          try {
+            accountRow = await getAccountById(queryAccountId);
+          } catch {}
+
+          const tokens = await TokenStorage.getTokensForAccount(queryAccountId);
+          if (!tokens) {
+            return res.json({
+              success: false,
+              nodeId: this.config.nodeId,
+              exportedAt: new Date().toISOString(),
+              accounts: [],
+              error: `No active auth tokens found for account #${queryAccountId}. Make sure the account has logged in via /link first.`,
+            });
+          }
+
+          return res.json({
+            success: true,
+            nodeId: this.config.nodeId,
+            exportedAt: new Date().toISOString(),
+            totalExported: 1,
+            accounts: [
+              {
+                accountId: queryAccountId,
+                email: (bot as any)?.email || accountRow?.email || '',
+                gamertag: bot?.xboxUsername || bot?.inGameIgn || accountRow?.gamertag || '',
+                tokens: tokens,
+              },
+            ],
+          });
+        }
+
+        // Export all tokens on this node
+        const localBots = this.manager.getAllBots();
+        let accountRows: any[] = [];
+        try {
+          accountRows = await getAccountsForNode(this.config.nodeId);
+        } catch {}
+
+        const accountIds = new Set<string>();
+        localBots.forEach(b => accountIds.add(b.accountId));
+        accountRows.forEach(r => accountIds.add(r.id));
+
+        // Also check disk profile directories so imported or offline accounts are discovered
+        const tempBase = path.join(os.tmpdir(), 'donut-bot-profiles');
+        if (fs.existsSync(tempBase)) {
+          try {
+            for (const ent of fs.readdirSync(tempBase)) {
+              if (fs.statSync(path.join(tempBase, ent)).isDirectory()) {
+                accountIds.add(ent);
+              }
+            }
+          } catch {}
+        }
+        const legacyBase = path.resolve(process.cwd(), 'profile');
+        if (fs.existsSync(legacyBase)) {
+          try {
+            for (const ent of fs.readdirSync(legacyBase)) {
+              if (fs.statSync(path.join(legacyBase, ent)).isDirectory()) {
+                accountIds.add(ent);
+              }
+            }
+          } catch {}
+        }
+
+        const exportedAccounts: any[] = [];
+
+        for (const id of accountIds) {
+          const tokens = await TokenStorage.getTokensForAccount(id);
+          if (tokens && Object.keys(tokens).length > 0) {
+            const b = this.manager.getBot(id);
+            const row = accountRows.find(r => r.id === id);
+            exportedAccounts.push({
+              accountId: id,
+              email: (b as any)?.email || row?.email || '',
+              gamertag: b?.xboxUsername || b?.inGameIgn || row?.gamertag || '',
+              tokens: tokens,
+            });
+          }
+        }
+
+        res.json({
+          success: true,
+          nodeId: this.config.nodeId,
+          exportedAt: new Date().toISOString(),
+          totalExported: exportedAccounts.length,
+          accounts: exportedAccounts,
+        });
+      } catch (err: any) {
+        logger.error(`API: /api/tokens/export failed: ${err?.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Import auth tokens ──────────────────────────────────────────────────
+    this.app.post('/api/tokens/import', async (req, res) => {
+      try {
+        const body = req.body;
+        if (!body) {
+          return res.status(400).json({ success: false, error: 'Empty import payload' });
+        }
+
+        // Normalize payload: can be { accounts: [...] }, Array [...], single { accountId, tokens }, or direct { [file]: ... }
+        let accountsToImport: any[] = [];
+
+        if (Array.isArray(body)) {
+          accountsToImport = body;
+        } else if (Array.isArray(body.accounts)) {
+          accountsToImport = body.accounts;
+        } else if (body.accountId && (body.tokens || typeof body === 'object')) {
+          accountsToImport = [body];
+        } else if (typeof body === 'object' && Object.keys(body).length > 0) {
+          const fallbackId = String(req.query.accountId || body.singleId || body.id || '').trim();
+          if (fallbackId) {
+            accountsToImport = [{
+              accountId: fallbackId,
+              email: body.email || '',
+              tokens: body.tokens || body,
+            }];
+          }
+        }
+
+        if (accountsToImport.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid token format. Payload must include accountId and tokens.',
+          });
+        }
+
+        let importedCount = 0;
+        const errors: { accountId: string; error: string }[] = [];
+        const targetNode = this.config.nodeId;
+
+        for (const item of accountsToImport) {
+          const accId = String(item.accountId || item.id || '').trim();
+          if (!accId) {
+            errors.push({ accountId: 'unknown', error: 'Missing account ID' });
+            continue;
+          }
+
+          let tokenData = item.tokens || item;
+          if (tokenData.accountId && tokenData.tokens) {
+            tokenData = tokenData.tokens;
+          }
+
+          const importResult = await TokenStorage.importTokensForAccount(accId, targetNode, tokenData);
+          if (!importResult.success) {
+            errors.push({ accountId: accId, error: importResult.error || 'Failed to write token files' });
+            continue;
+          }
+
+          // Ensure account row exists in Supabase
+          try {
+            const email = (item.email || '').trim() || `${accId}@token.local`;
+            await upsertAccount({
+              id: accId,
+              node_id: targetNode,
+              email: email,
+              status: 'IDLE',
+              auto_connect: false,
+            });
+          } catch (err: any) {
+            logger.debug(`Import upsertAccount [${accId}]: ${err?.message}`);
+          }
+
+          // Instantiate bot in AccountManager if not present
+          try {
+            if (!this.manager.getBot(accId)) {
+              await this.manager.instantiateBot({
+                id: accId,
+                email: (item.email || '').trim(),
+                nodeId: targetNode,
+                autoConnect: false,
+                offline: false,
+                profilesFolder: '',
+              });
+            }
+          } catch (err: any) {
+            logger.debug(`Import instantiateBot [${accId}]: ${err?.message}`);
+          }
+
+          importedCount++;
+        }
+
+        res.json({
+          success: importedCount > 0,
+          importedCount: importedCount,
+          errors: errors.length > 0 ? errors : undefined,
+        });
+      } catch (err: any) {
+        logger.error(`API: /api/tokens/import failed: ${err?.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });

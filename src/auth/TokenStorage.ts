@@ -328,4 +328,144 @@ export class TokenStorage {
     }
     return folderPath;
   }
+
+  /**
+   * Reads and bundles all valid token files for an account from disk or Supabase.
+   * Returns an object mapping fileName -> parsed JSON data, or null if no tokens exist.
+   */
+  public static async getTokensForAccount(accountId: string): Promise<Record<string, any> | null> {
+    const result: Record<string, any> = {};
+
+    // 1. Check local temp directory
+    const tempFolder = path.join(PROFILES_BASE, accountId);
+    if (fs.existsSync(tempFolder)) {
+      this.sanitizeDirectory(tempFolder);
+      try {
+        const files = fs.readdirSync(tempFolder).filter(f => f.endsWith('.json'));
+        for (const file of files) {
+          try {
+            const raw = fs.readFileSync(path.join(tempFolder, file), 'utf8');
+            if (this.validateJson(raw)) {
+              result[file] = JSON.parse(raw);
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    // 2. Check legacy profile/<accountId> directory
+    const legacyFolder = path.resolve(process.cwd(), 'profile', accountId);
+    if (fs.existsSync(legacyFolder)) {
+      this.sanitizeDirectory(legacyFolder);
+      try {
+        const files = fs.readdirSync(legacyFolder).filter(f => f.endsWith('.json'));
+        for (const file of files) {
+          if (!result[file]) {
+            try {
+              const raw = fs.readFileSync(path.join(legacyFolder, file), 'utf8');
+              if (this.validateJson(raw)) {
+                result[file] = JSON.parse(raw);
+              }
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Fallback to Supabase loadAuthToken
+    try {
+      const saved = await loadAuthToken(accountId);
+      if (saved && saved.token_data && this.validateJson(saved.token_data)) {
+        if (saved.file_name === '__bundle__') {
+          const parsedBundle = JSON.parse(saved.token_data);
+          for (const [fileName, content] of Object.entries(parsedBundle)) {
+            if (!result[fileName]) {
+              try {
+                result[fileName] = typeof content === 'string' ? JSON.parse(content) : content;
+              } catch {
+                result[fileName] = content;
+              }
+            }
+          }
+        } else {
+          if (!result[saved.file_name]) {
+            try {
+              result[saved.file_name] = JSON.parse(saved.token_data);
+            } catch {
+              result[saved.file_name] = saved.token_data;
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`getTokensForAccount [${accountId}] Supabase check: ${err?.message}`);
+    }
+
+    return Object.keys(result).length > 0 ? result : null;
+  }
+
+  /**
+   * Imports token data for an account, atomically writes it to both the temp
+   * folder and legacy profile folder, and synchronizes the bundle to Supabase.
+   */
+  public static async importTokensForAccount(
+    accountId: string,
+    nodeId: string,
+    tokens: Record<string, any>
+  ): Promise<{ success: boolean; fileCount: number; error?: string }> {
+    if (!tokens || typeof tokens !== 'object' || Object.keys(tokens).length === 0) {
+      return { success: false, fileCount: 0, error: 'No token files found in payload' };
+    }
+
+    const tempFolder = path.join(PROFILES_BASE, accountId);
+    const legacyFolder = path.resolve(process.cwd(), 'profile', accountId);
+
+    if (!fs.existsSync(tempFolder)) {
+      fs.mkdirSync(tempFolder, { recursive: true, mode: 0o700 });
+    }
+    if (!fs.existsSync(legacyFolder)) {
+      fs.mkdirSync(legacyFolder, { recursive: true, mode: 0o700 });
+    }
+
+    const bundled: Record<string, string> = {};
+    let writtenFiles = 0;
+
+    for (const [fileName, tokenData] of Object.entries(tokens)) {
+      let cleanName = path.basename(fileName).trim();
+      if (!cleanName.endsWith('.json')) {
+        cleanName += '.json';
+      }
+
+      const jsonStr = typeof tokenData === 'string'
+        ? tokenData.trim()
+        : JSON.stringify(tokenData, null, 2);
+
+      if (!this.validateJson(jsonStr)) continue;
+
+      const tempPath = path.join(tempFolder, cleanName);
+      const legacyPath = path.join(legacyFolder, cleanName);
+
+      const okTemp = this.atomicWriteJson(tempPath, jsonStr);
+      const okLegacy = this.atomicWriteJson(legacyPath, jsonStr);
+
+      if (okTemp || okLegacy) {
+        bundled[cleanName] = jsonStr;
+        writtenFiles++;
+      }
+    }
+
+    if (writtenFiles === 0) {
+      return { success: false, fileCount: 0, error: 'No valid token JSON files could be parsed or written' };
+    }
+
+    // Sync bundle to Supabase
+    try {
+      await saveAuthToken(accountId, nodeId, '__bundle__', JSON.stringify(bundled));
+      logger.info(`Imported & synchronized ${writtenFiles} token file(s) for account '${accountId}'`, accountId);
+    } catch (err: any) {
+      logger.warn(`Tokens written to disk for '${accountId}', but Supabase sync returned: ${err?.message}`, accountId);
+    }
+
+    return { success: true, fileCount: writtenFiles };
+  }
 }

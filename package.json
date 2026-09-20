@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "node dist/src/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "tsc && node dist/tests/schedulerAndMath.test.js && node dist/tests/microsoftAuth.test.js && node dist/tests/accountRemovalAndRealtimeAuth.test.js && node dist/tests/nbtDesyncSafety.test.js && node dist/tests/autoTeleportAndPhysics.test.js"
+    "test": "tsc && node dist/tests/schedulerAndMath.test.js && node dist/tests/microsoftAuth.test.js && node dist/tests/accountRemovalAndRealtimeAuth.test.js && node dist/tests/nbtDesyncSafety.test.js && node dist/tests/autoTeleportAndPhysics.test.js && node dist/tests/tokenExportAndImport.test.js"
   },
   "keywords": [
     "minecraft",
