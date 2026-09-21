@@ -136,11 +136,15 @@ export async function setAccountGroup(accountIds: string[], groupName: string | 
   const client = getSupabaseClient();
   const cleanName = groupName ? groupName.trim() : null;
   for (const id of accountIds) {
-    const { error } = await client.from('accounts').update({
-      group_name: cleanName,
-      updated_at: new Date().toISOString(),
-    }).eq('id', id);
-    if (error) logger.debug(`setAccountGroup [${id}]: ${error.message}`);
+    try {
+      const { error } = await client.from('accounts').update({
+        group_name: cleanName,
+        updated_at: new Date().toISOString(),
+      }).eq('id', id);
+      if (error) logger.debug(`setAccountGroup [${id}]: ${error.message}`);
+    } catch (err: any) {
+      logger.debug(`setAccountGroup error [${id}]: ${err?.message}`);
+    }
   }
 }
 
@@ -148,29 +152,41 @@ export async function renameAccountGroup(oldName: string, newName: string): Prom
   const client = getSupabaseClient();
   const cleanOld = oldName.trim();
   const cleanNew = newName.trim();
-  const { error } = await client.from('accounts').update({
-    group_name: cleanNew,
-    updated_at: new Date().toISOString(),
-  }).eq('group_name', cleanOld);
-  if (error) logger.debug(`renameAccountGroup [${cleanOld} -> ${cleanNew}]: ${error.message}`);
+  try {
+    const { error } = await client.from('accounts').update({
+      group_name: cleanNew,
+      updated_at: new Date().toISOString(),
+    }).eq('group_name', cleanOld);
+    if (error) logger.debug(`renameAccountGroup [${cleanOld} -> ${cleanNew}]: ${error.message}`);
+  } catch (err: any) {
+    logger.debug(`renameAccountGroup error: ${err?.message}`);
+  }
 }
 
 export async function ungroupAccounts(groupName?: string, accountIds?: string[]): Promise<void> {
   const client = getSupabaseClient();
   if (Array.isArray(accountIds) && accountIds.length > 0) {
     for (const id of accountIds) {
+      try {
+        const { error } = await client.from('accounts').update({
+          group_name: null,
+          updated_at: new Date().toISOString(),
+        }).eq('id', id);
+        if (error) logger.debug(`ungroupAccounts [${id}]: ${error.message}`);
+      } catch (err: any) {
+        logger.debug(`ungroupAccounts error [${id}]: ${err?.message}`);
+      }
+    }
+  } else if (groupName) {
+    try {
       const { error } = await client.from('accounts').update({
         group_name: null,
         updated_at: new Date().toISOString(),
-      }).eq('id', id);
-      if (error) logger.debug(`ungroupAccounts [${id}]: ${error.message}`);
+      }).eq('group_name', groupName.trim());
+      if (error) logger.debug(`ungroupAccounts group [${groupName}]: ${error.message}`);
+    } catch (err: any) {
+      logger.debug(`ungroupAccounts group error: ${err?.message}`);
     }
-  } else if (groupName) {
-    const { error } = await client.from('accounts').update({
-      group_name: null,
-      updated_at: new Date().toISOString(),
-    }).eq('group_name', groupName.trim());
-    if (error) logger.debug(`ungroupAccounts group [${groupName}]: ${error.message}`);
   }
 }
 
