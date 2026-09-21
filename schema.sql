@@ -102,3 +102,12 @@ CREATE TABLE IF NOT EXISTS ignore_list (
 CREATE INDEX IF NOT EXISTS idx_accounts_node_id ON accounts(node_id);
 CREATE INDEX IF NOT EXISTS idx_commands_node_status ON commands(node_id, status);
 CREATE INDEX IF NOT EXISTS idx_auth_tokens_node_id ON auth_tokens(node_id);
+
+-- Disable Row Level Security (RLS) so the frontend anon key and backend can read and write
+ALTER TABLE backend_nodes DISABLE ROW LEVEL SECURITY;
+ALTER TABLE accounts DISABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_tokens DISABLE ROW LEVEL SECURITY;
+ALTER TABLE commands DISABLE ROW LEVEL SECURITY;
+ALTER TABLE node_settings DISABLE ROW LEVEL SECURITY;
+ALTER TABLE permissions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE ignore_list DISABLE ROW LEVEL SECURITY;
