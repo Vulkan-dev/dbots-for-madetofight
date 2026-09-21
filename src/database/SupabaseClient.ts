@@ -109,6 +109,7 @@ export async function upsertAccount(account: {
   msa_code?: string | null; msa_url?: string | null; msa_direct_url?: string | null;
   auth_status?: string; auth_error?: string | null;
   auto_connect?: boolean; offline_mode?: boolean;
+  group_name?: string | null;
 }): Promise<void> {
   const client = getSupabaseClient();
   const cleanAccount: Record<string, any> = {
@@ -129,6 +130,48 @@ export async function updateAccountFields(id: string, fields: Record<string, any
     updated_at: new Date().toISOString(),
   }).eq('id', id);
   if (error) logger.debug(`updateAccountFields [${id}]: ${error.message}`);
+}
+
+export async function setAccountGroup(accountIds: string[], groupName: string | null): Promise<void> {
+  const client = getSupabaseClient();
+  const cleanName = groupName ? groupName.trim() : null;
+  for (const id of accountIds) {
+    const { error } = await client.from('accounts').update({
+      group_name: cleanName,
+      updated_at: new Date().toISOString(),
+    }).eq('id', id);
+    if (error) logger.debug(`setAccountGroup [${id}]: ${error.message}`);
+  }
+}
+
+export async function renameAccountGroup(oldName: string, newName: string): Promise<void> {
+  const client = getSupabaseClient();
+  const cleanOld = oldName.trim();
+  const cleanNew = newName.trim();
+  const { error } = await client.from('accounts').update({
+    group_name: cleanNew,
+    updated_at: new Date().toISOString(),
+  }).eq('group_name', cleanOld);
+  if (error) logger.debug(`renameAccountGroup [${cleanOld} -> ${cleanNew}]: ${error.message}`);
+}
+
+export async function ungroupAccounts(groupName?: string, accountIds?: string[]): Promise<void> {
+  const client = getSupabaseClient();
+  if (Array.isArray(accountIds) && accountIds.length > 0) {
+    for (const id of accountIds) {
+      const { error } = await client.from('accounts').update({
+        group_name: null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', id);
+      if (error) logger.debug(`ungroupAccounts [${id}]: ${error.message}`);
+    }
+  } else if (groupName) {
+    const { error } = await client.from('accounts').update({
+      group_name: null,
+      updated_at: new Date().toISOString(),
+    }).eq('group_name', groupName.trim());
+    if (error) logger.debug(`ungroupAccounts group [${groupName}]: ${error.message}`);
+  }
 }
 
 export async function deleteAccount(id: string, nodeId?: string): Promise<void> {

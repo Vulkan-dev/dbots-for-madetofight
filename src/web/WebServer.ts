@@ -21,6 +21,9 @@ import {
   syncToSecondarySupabase,
   loadFromSecondarySupabase,
   getLastSecondarySyncStatus,
+  setAccountGroup,
+  renameAccountGroup,
+  ungroupAccounts,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 import { discordLogger } from '../discord/DiscordLogger';
@@ -271,6 +274,47 @@ export class WebServer {
           email: (email || '').trim(),
         });
         res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Group accounts (folders) ─────────────────────────────────────────────
+    this.app.post('/api/accounts/group', async (req, res) => {
+      const { accountIds, groupName } = req.body;
+      if (!Array.isArray(accountIds) || accountIds.length === 0) {
+        res.status(400).json({ success: false, error: 'accountIds array required' });
+        return;
+      }
+      try {
+        await setAccountGroup(accountIds.map(String), groupName || null);
+        res.json({ success: true, groupName: groupName || null, accountIds });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Ungroup accounts ─────────────────────────────────────────────────────
+    this.app.post('/api/accounts/ungroup', async (req, res) => {
+      const { groupName, accountIds } = req.body;
+      try {
+        await ungroupAccounts(groupName, accountIds);
+        res.json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Rename account group ─────────────────────────────────────────────────
+    this.app.post('/api/accounts/rename-group', async (req, res) => {
+      const { oldName, newName } = req.body;
+      if (!oldName || !newName) {
+        res.status(400).json({ success: false, error: 'oldName and newName required' });
+        return;
+      }
+      try {
+        await renameAccountGroup(oldName, newName);
+        res.json({ success: true, oldName, newName });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }

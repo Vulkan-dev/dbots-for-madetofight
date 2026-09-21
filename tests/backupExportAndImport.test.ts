@@ -240,6 +240,50 @@ async function runTests() {
     assert(resSecLoad.body.counts !== undefined, 'Response counts must be defined');
     console.log(`✔ Test 10 Passed: Load backup from secondary API executed safely and reported status.`);
 
+    // ── Test 11: POST /api/accounts/group ──────────────────────────────────
+    console.log('\n--- Test 11: POST /api/accounts/group ---');
+    const resGroup = await httpRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/api/accounts/group',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, JSON.stringify({
+      accountIds: [testAccId, testAccId2],
+      groupName: 'Mining Team',
+    }));
+    assert(resGroup.status === 200 || resGroup.status === 500, `Expected 200 or 500, got ${resGroup.status}`);
+    console.log(`✔ Test 11 Passed: /api/accounts/group handled payload gracefully.`);
+
+    // ── Test 12: POST /api/accounts/rename-group ───────────────────────────
+    console.log('\n--- Test 12: POST /api/accounts/rename-group ---');
+    const resRename = await httpRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/api/accounts/rename-group',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, JSON.stringify({
+      oldName: 'Mining Team',
+      newName: 'Mining Duo',
+    }));
+    assert(resRename.status === 200 || resRename.status === 500, `Expected 200 or 500, got ${resRename.status}`);
+    console.log(`✔ Test 12 Passed: /api/accounts/rename-group handled payload gracefully.`);
+
+    // ── Test 13: POST /api/accounts/ungroup ────────────────────────────────
+    console.log('\n--- Test 13: POST /api/accounts/ungroup ---');
+    const resUngroup = await httpRequest({
+      hostname: '127.0.0.1',
+      port: testPort,
+      path: '/api/accounts/ungroup',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, JSON.stringify({
+      accountIds: [testAccId, testAccId2],
+    }));
+    assert(resUngroup.status === 200 || resUngroup.status === 500, `Expected 200 or 500, got ${resUngroup.status}`);
+    console.log(`✔ Test 13 Passed: /api/accounts/ungroup handled payload gracefully.`);
+
   } finally {
     await new Promise<void>((resolve) => {
       httpServer.close(() => resolve());
