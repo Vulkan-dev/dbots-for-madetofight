@@ -416,16 +416,16 @@ export class BedrockBot extends EventEmitter {
             runtime_entity_id: this.runtimeEntityId,
           });
 
-          // Reassert persistent crouch toggle stance after respawning across multiple intervals
-          [200, 600, 1200, 2500].forEach(delay => {
+          // Reassert persistent crouch toggle stance after respawning
+          if (this.actionController.persistentCrouch) {
             setTimeout(() => {
               try {
                 if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
                   this.actionController.reassertPersistentStates();
                 }
               } catch {}
-            }, delay);
-          });
+            }, 500);
+          }
         } catch (err) {
           logger.error('Failed to send auto-respawn packets', this.accountId, err);
         }
@@ -820,16 +820,6 @@ export class BedrockBot extends EventEmitter {
 
       // Ensure action controller toggles and physics inputs are cleanly reset on initial connect
       this.actionController.resetAllStates();
-      if (this.actionController.persistentCrouch) {
-        this.actionController.reassertPersistentStates();
-        [100, 300, 700, 1500, 3000].forEach(delay => {
-          setTimeout(() => {
-            if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
-              this.actionController.reassertPersistentStates();
-            }
-          }, delay);
-        });
-      }
 
       // If a saved AFK spot exists in tracker or LocationStorage, restore and enforce 5-minute AFK monitoring
       try {
@@ -852,13 +842,11 @@ export class BedrockBot extends EventEmitter {
       const status = packet?.status;
       if (status === 'player_spawn' || status === 3) {
         if (this.actionController.persistentCrouch) {
-          [200, 800, 1800].forEach(delay => {
-            setTimeout(() => {
-              if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
-                this.actionController.reassertPersistentStates();
-              }
-            }, delay);
-          });
+          setTimeout(() => {
+            if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
+              this.actionController.reassertPersistentStates();
+            }
+          }, 300);
         }
       }
     });

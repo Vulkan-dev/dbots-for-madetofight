@@ -97,6 +97,9 @@ export class ActionController {
   public toggleCrouch(enabled?: boolean | string): boolean {
     const boolState = typeof enabled === 'string' ? enabled === 'true' : (typeof enabled === 'boolean' ? enabled : undefined);
     const targetState = boolState !== undefined ? boolState : !this.persistentCrouch;
+    if (boolState !== undefined && this.persistentCrouch === targetState && this.isCrouching === targetState) {
+      return this.persistentCrouch;
+    }
     this.persistentCrouch = targetState;
     this.isCrouching = targetState;
     PersistentActionStorage.setCrouch(this.accountId, targetState);
@@ -166,9 +169,9 @@ export class ActionController {
       y: Math.floor(pos.y),
       z: Math.floor(pos.z),
     };
-    if (client) {
+    if (client && runtimeId != null && runtimeId !== 0n && runtimeId !== '0') {
       try {
-        const entityId = (runtimeId != null && runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+        const entityId = BigInt(runtimeId);
         client.queue('player_action', {
           runtime_entity_id: entityId,
           action: 'start_sneak',

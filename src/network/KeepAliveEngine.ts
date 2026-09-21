@@ -215,9 +215,6 @@ export class KeepAliveEngine {
       return;
     }
     if (this.isSneakingState === enabled) {
-      if (enabled) {
-        this.sendSneakPlayerAction(true);
-      }
       return;
     }
     this.isSneakingState = enabled;
@@ -418,7 +415,6 @@ export class KeepAliveEngine {
 
   private static readonly ZERO_VEC2 = Object.freeze({ x: 0, z: 0 });
   private static readonly ZERO_VEC3 = Object.freeze({ x: 0, y: 0, z: 0 });
-  private static readonly EMPTY_INPUT_FLAGS: Record<string, boolean> = Object.freeze({}) as Record<string, boolean>;
   private lastJumpingState: boolean = false;
   private lastSneakingState: boolean = false;
 
@@ -431,7 +427,7 @@ export class KeepAliveEngine {
     let deltaY = 0;
     let deltaX = 0;
     let deltaZ = 0;
-    let inputDataObj: Record<string, boolean> = KeepAliveEngine.EMPTY_INPUT_FLAGS;
+    let inputDataArray: string[] | null = null;
 
     const hasDynamicActions =
       !this.isGrounded ||
@@ -555,27 +551,23 @@ export class KeepAliveEngine {
       if (this.isSneakingState) {
         currentFlags.add('sneaking');
         currentFlags.add('sneak_down');
+        currentFlags.add('sneak_current_raw');
         currentFlags.add('change_height');
         currentFlags.add('persist_sneak');
         currentFlags.add('sneak_toggle_down');
         if (!this.lastSneakingState) {
           currentFlags.add('start_sneaking');
-        }
-        // Periodically reinforce sneak packets every 20 ticks (1s) to guarantee crouch stance survives respawns, teleports, and lag spikes
-        if (this.ticksElapsed % 20 === 0) {
-          this.sendSneakPlayerAction(true);
+          currentFlags.add('sneak_pressed_raw');
         }
       } else if (this.stopSneakTicks > 0) {
         currentFlags.add('stop_sneaking');
+        currentFlags.add('sneak_released_raw');
         currentFlags.add('change_height');
         this.stopSneakTicks--;
       }
 
       if (currentFlags.size > 0) {
-        inputDataObj = {};
-        for (const flag of currentFlags) {
-          inputDataObj[flag] = true;
-        }
+        inputDataArray = Array.from(currentFlags);
       }
     }
 
@@ -588,7 +580,7 @@ export class KeepAliveEngine {
         position: this.position,
         move_vector: (deltaX !== 0 || deltaZ !== 0) ? { x: 0, y: 1 } : KeepAliveEngine.ZERO_VEC2,
         head_yaw: this.headYaw,
-        input_data: inputDataObj,
+        input_data: inputDataArray,
         input_mode: 'mouse',
         play_mode: 'screen',
         interaction_model: 'crosshair',
