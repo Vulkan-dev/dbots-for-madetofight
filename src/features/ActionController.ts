@@ -106,7 +106,7 @@ export class ActionController {
 
     // 1. Send Geyser/Bedrock 20Hz InputEngine sneak transition
     if (engine) {
-      engine.setSneak(this.persistentCrouch);
+      engine.setSneak(this.persistentCrouch, this.persistentCrouch);
     }
 
     // 2. Also send player_action start_sneak/stop_sneak for vanilla BDS compatibility
@@ -137,7 +137,7 @@ export class ActionController {
       }
     }
 
-    logger.info(`Crouch toggle: ${this.persistentCrouch ? 'ON' : 'OFF'}`, this.accountId);
+    logger.info(`Crouch toggle: ${this.persistentCrouch ? 'ON' : 'OFF'} (locked: ${this.persistentCrouch})`, this.accountId);
     return this.persistentCrouch;
   }
 
@@ -149,7 +149,7 @@ export class ActionController {
     this.isCrouching = true;
     const engine = this.getKeepAliveEngine();
     if (engine) {
-      engine.setSneak(true);
+      engine.setSneak(true, true);
     }
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
@@ -790,26 +790,23 @@ export class ActionController {
     const engine = this.getKeepAliveEngine();
     if (engine) {
       engine.clearInputFlags();
+      engine.setSneak(false, false);
+      engine.setJump(false);
     }
 
-    this.persistentCrouch = false;
-    this.isCrouching = false;
     this.isJumping = false;
     this.isLeftClicking = false;
     this.isRightClicking = false;
     this.isSpamClicking = false;
+    this.isCrouching = false;
+    this.persistentCrouch = false;
   }
 
   /**
    * Reset transient actions and physics engine inputs to safe defaults.
-   * Preserves persistent crouch toggle across deaths, respawns, and teleports unless keepPersistentCrouch is false.
+   * Preserves persistent crouch toggle across deaths, respawns, and teleports.
    */
-  public resetAllStates(keepPersistentCrouch: boolean = true): void {
-    if (!keepPersistentCrouch) {
-      this.stopAll();
-      return;
-    }
-
+  public resetAllStates(): void {
     // Stop transient physics actions
     if (this.jumpInterval) {
       clearInterval(this.jumpInterval);
@@ -827,7 +824,7 @@ export class ActionController {
     const engine = this.getKeepAliveEngine();
     if (engine) {
       engine.clearInputFlags();
-      engine.setSneak(this.persistentCrouch);
+      engine.setSneak(this.persistentCrouch, this.persistentCrouch);
       engine.setJump(false);
     }
 

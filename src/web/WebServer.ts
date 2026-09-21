@@ -24,6 +24,7 @@ import {
   setAccountGroup,
   renameAccountGroup,
   ungroupAccounts,
+  clearDatabaseTables,
 } from '../database/SupabaseClient';
 import { logger } from '../utils/logger';
 import { discordLogger } from '../discord/DiscordLogger';
@@ -244,22 +245,8 @@ export class WebServer {
       if (!accountId) { res.status(400).json({ success: false, error: 'accountId required' }); return; }
       if (!targetNodeId) { res.status(400).json({ success: false, error: 'targetNodeId required' }); return; }
       try {
-        const bot = this.manager.getBot(accountId);
-        if (bot) {
-          const ok = await this.manager.moveAccount(accountId, targetNodeId);
-          res.json({ success: ok });
-        } else {
-          // If bot is hosted on another node, update Supabase transfer and signal target node
-          const { TokenStorage } = require('../auth/TokenStorage');
-          await TokenStorage.transferTokens(accountId, targetNodeId);
-          await updateAccountFields(accountId, {
-            node_id: targetNodeId,
-            auto_connect: true,
-            status: 'CONNECTING',
-          });
-          await insertCommand(targetNodeId, accountId, 'LOAD_AND_CONNECT', { accountId });
-          res.json({ success: true });
-        }
+        const ok = await this.manager.moveAccount(accountId, targetNodeId);
+        res.json({ success: ok });
       } catch (err: any) {
         res.status(500).json({ success: false, error: err?.message });
       }
@@ -453,6 +440,22 @@ export class WebServer {
           });
         }
 
+        // 0. Cleanly disconnect all existing bots and purge token files
+        logger.info('Preparing system backup import: disconnecting all active accounts...');
+        await this.manager.disconnectAll();
+        for (const bot of this.manager.getAllBots()) {
+          try { await bot.dispose(); } catch {}
+        }
+        try {
+          const allNodesList = await getAllNodes();
+          for (const n of allNodesList) {
+            if (n.id !== this.config.nodeId) {
+              await insertCommand(n.id, null, 'DISCONNECT_ALL', {});
+            }
+          }
+        } catch {}
+        await TokenStorage.clearAllTokens();
+
         // 1. Overwrite database records in Supabase
         let dbResult = { accountsCount: 0, nodesCount: 0, tokensCount: 0 };
         try {
@@ -544,6 +547,25 @@ export class WebServer {
     // ── Load Backup from Secondary Supabase ───────────────────────────────────
     this.app.post('/api/backup/load-secondary', async (req, res) => {
       try {
+        logger.info('Preparing clean database restore: disconnecting all active accounts...');
+        // Cleanly disconnect all local bots
+        await this.manager.disconnectAll();
+        for (const bot of this.manager.getAllBots()) {
+          try { await bot.dispose(); } catch {}
+        }
+        // Broadcast DISCONNECT_ALL to worker nodes
+        try {
+          const nodes = await getAllNodes();
+          for (const n of nodes) {
+            if (n.id !== this.config.nodeId) {
+              await insertCommand(n.id, null, 'DISCONNECT_ALL', {});
+            }
+          }
+        } catch {}
+
+        // Clear local token files from disk
+        await TokenStorage.clearAllTokens();
+
         const result = await loadFromSecondarySupabase();
         if (!result.success) {
           return res.status(500).json({
@@ -573,13 +595,13 @@ export class WebServer {
           }
         }
 
-        // 2. Instantiate restored accounts in AccountManager
+        // 2. Instantiate restored accounts matching this node
         let botsInstantiated = 0;
         for (const acc of accounts) {
           const accId = String(acc.id || acc.accountId || '').trim();
           if (!accId) continue;
           const targetNode = acc.node_id || this.config.nodeId;
-          if (targetNode === this.config.nodeId || !this.manager.getBot(accId)) {
+          if (targetNode === this.config.nodeId) {
             try {
               await this.manager.instantiateBot({
                 id: accId,
@@ -593,6 +615,11 @@ export class WebServer {
             } catch (botErr: any) {
               logger.debug(`instantiateBot on load-secondary [${accId}]: ${botErr?.message}`);
             }
+          } else {
+            // Signal target worker node to load its restored bot
+            try {
+              await insertCommand(targetNode, accId, 'LOAD_AND_CONNECT', { accountId: accId });
+            } catch {}
           }
         }
 
@@ -612,6 +639,69 @@ export class WebServer {
         });
       } catch (err: any) {
         logger.error(`API: /api/backup/load-secondary failed: ${err?.message}`);
+        res.status(500).json({ success: false, error: err?.message });
+      }
+    });
+
+    // ── Admin: Clear Database (NODE / ACCOUNTS) ──────────────────────────────
+    this.app.post('/api/admin/clear-database', async (req, res) => {
+      const { clearNodes, clearAccounts, password, adminSecret } = req.body;
+      const configuredSecret = process.env.ADMIN_PASSWORD || process.env.ADMIN_SECRET || process.env.API_SECRET || this.config.webServer.apiSecret;
+      const providedSecret = req.headers['x-api-secret'] || password || adminSecret;
+
+      if (configuredSecret && providedSecret !== configuredSecret) {
+        logger.warn('Unauthorized attempt to clear database with invalid admin password');
+        res.status(401).json({ success: false, error: 'Invalid admin authentication password' });
+        return;
+      }
+
+      if (!clearNodes && !clearAccounts) {
+        res.status(400).json({ success: false, error: 'Please select at least one item (NODE or ACCOUNTS) to clear.' });
+        return;
+      }
+
+      try {
+        if (clearAccounts) {
+          logger.info('Admin action: cleanly disconnecting all bots and clearing all accounts...');
+          // 1. Disconnect all local bots
+          await this.manager.disconnectAll();
+          for (const bot of this.manager.getAllBots()) {
+            try { await bot.dispose(); } catch {}
+          }
+          // 2. Command remote nodes to disconnect all bots
+          try {
+            const nodes = await getAllNodes();
+            for (const n of nodes) {
+              if (n.id !== this.config.nodeId) {
+                await insertCommand(n.id, null, 'DISCONNECT_ALL', {});
+              }
+            }
+          } catch {}
+
+          // 3. Clear all cached tokens from disk
+          await TokenStorage.clearAllTokens();
+
+          // 4. Wipe tables from database
+          const wipeRes = await clearDatabaseTables({ clearAccounts: true });
+          if (!wipeRes.success) throw new Error(wipeRes.error || 'Failed to clear accounts from database');
+        }
+
+        if (clearNodes) {
+          logger.info('Admin action: clearing worker nodes from database...');
+          const wipeRes = await clearDatabaseTables({ clearNodes: true, preserveNodeId: this.config.nodeId });
+          if (!wipeRes.success) throw new Error(wipeRes.error || 'Failed to clear nodes from database');
+        }
+
+        res.json({
+          success: true,
+          message: 'Database cleared successfully',
+          cleared: {
+            nodes: Boolean(clearNodes),
+            accounts: Boolean(clearAccounts),
+          },
+        });
+      } catch (err: any) {
+        logger.error(`API: /api/admin/clear-database failed: ${err?.message}`);
         res.status(500).json({ success: false, error: err?.message });
       }
     });

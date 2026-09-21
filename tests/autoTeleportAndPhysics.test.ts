@@ -121,27 +121,50 @@ async function runTests() {
   };
   const crouchEngine = new KeepAliveEngine(crouchClient as any, 'crouchBot', { x: 50, y: 64, z: 50 });
 
-  // Toggle ON
-  crouchEngine.setSneak(true);
+  // Toggle ON with Lock
+  crouchEngine.setSneak(true, true);
   assert((crouchEngine as any).isSneakingState === true, 'Sneak state must be true on toggle ON');
+  assert((crouchEngine as any).isCrouchLocked === true, 'Crouch lock must be active');
   const startSneakPacket = queuedPackets.find(p => p.name === 'player_action' && p.data.action === 'start_sneak');
   assert(startSneakPacket != null, 'Must send player_action start_sneak packet');
   assert(startSneakPacket!.data.position.x === 0 && startSneakPacket!.data.position.y === 0 && startSneakPacket!.data.position.z === 0, 'position must be zero vector');
 
-  const playerInputSneak = queuedPackets.find(p => p.name === 'player_input' && p.data.sneaking === true);
-  assert(playerInputSneak != null, 'Must send player_input with sneaking=true');
-
-  // Toggle OFF
-  queuedPackets.length = 0;
+  // Verify that background/game attempts to uncrouch are BLOCKED when locked
   crouchEngine.setSneak(false);
-  assert((crouchEngine as any).isSneakingState === false, 'Sneak state must be false on toggle OFF');
+  assert((crouchEngine as any).isSneakingState === true, 'Sneak state must remain true when crouch is locked');
+
+  // Explicit user unlock & toggle OFF
+  queuedPackets.length = 0;
+  crouchEngine.setSneak(false, false);
+  assert((crouchEngine as any).isSneakingState === false, 'Sneak state must be false on user toggle OFF');
+  assert((crouchEngine as any).isCrouchLocked === false, 'Crouch lock must be cleared');
   const stopSneakPacket = queuedPackets.find(p => p.name === 'player_action' && p.data.action === 'stop_sneak');
   assert(stopSneakPacket != null, 'Must send player_action stop_sneak packet');
   assert(stopSneakPacket!.data.position.x === 0 && stopSneakPacket!.data.position.y === 0 && stopSneakPacket!.data.position.z === 0, 'position must be zero vector');
   assert((crouchEngine as any).stopSneakTicks > 0, 'stopSneakTicks must be active during uncrouch transition');
-  console.log('✔ Crouch toggle ON / OFF input transitions validated.');
+  console.log('✔ Crouch toggle ON / OFF with persistent lock validated.');
 
-  // ── 5. AFKSpotTracker onResetPhysics callback ────────────────────────────────
+  // ── 5. Mid-air Gravity Descent on Teleport Landing (e.g. /home 1 into air) ───
+  const airEngine = new KeepAliveEngine(crouchClient as any, 'airBot', { x: 100, y: 120, z: 100 });
+  (airEngine as any).isRunning = true;
+  airEngine.handleTeleportLanding({ x: 100, y: 120, z: 100 }, undefined, false);
+  assert(airEngine.isGrounded === false, 'Mid-air landing must have isGrounded=false');
+  assert(!(airEngine as any).inputFlags.has('vertical_collision'), 'Mid-air bot must NOT assert vertical_collision');
+
+  // Simulate 5 ticks of falling with gravity
+  const initialY = airEngine.position.y;
+  for (let i = 0; i < 5; i++) {
+    (airEngine as any).onTick();
+  }
+  assert(airEngine.position.y < initialY, 'Bot must descend with gravity instead of freezing in mid-air');
+
+  // Server informs bot that it reached solid ground
+  airEngine.setGrounded(true);
+  assert(airEngine.isGrounded === true, 'setGrounded(true) must set isGrounded=true');
+  assert((airEngine as any).inputFlags.has('vertical_collision'), 'Grounded bot must assert vertical_collision');
+  console.log('✔ Mid-air gravity descent without freezing validated.');
+
+  // ── 6. AFKSpotTracker onResetPhysics callback ────────────────────────────────
   let resetCalled: boolean = false;
   const tracker = new AFKSpotTracker('Bot1', 'node-1', 1000, 5.0);
   tracker.setCallbacks(

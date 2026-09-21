@@ -379,6 +379,11 @@ export async function importAllBackupData(backup: {
   const nodes = backup.nodes || [];
   const tokens = backup.tokens || [];
 
+  // Clean wipe accounts and tokens first to prevent duplicate keys or leftover residue
+  if (accounts.length > 0 || tokens.length > 0) {
+    await clearDatabaseTables({ clearAccounts: true });
+  }
+
   if (nodes.length > 0) {
     for (const node of nodes) {
       const cleanNode = { ...node };
@@ -610,6 +615,65 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
 }
 
 /**
+ * Cleanly wipes selected primary database tables.
+ * Used during clean backup restoration and by admin database clear.
+ */
+export async function clearDatabaseTables(options: {
+  clearAccounts?: boolean;
+  clearNodes?: boolean;
+  preserveNodeId?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const client = getSupabaseClient();
+    if (options.clearAccounts) {
+      logger.info('Wiping accounts, auth_tokens, and commands from Primary Database...');
+      // 1. Clear auth_tokens
+      try {
+        await client.from('auth_tokens').delete().neq('account_id', '___none___');
+      } catch (e: any) {
+        logger.debug(`Error clearing auth_tokens: ${e?.message}`);
+      }
+      // 2. Clear commands
+      try {
+        await client.from('commands').delete().neq('id', 0);
+      } catch (e: any) {
+        logger.debug(`Error clearing commands: ${e?.message}`);
+      }
+      // 3. Clear bot_locations
+      try {
+        await client.from('bot_locations').delete().neq('account_id', '___none___');
+      } catch (e: any) {
+        // Table might not exist or be empty
+      }
+      // 4. Clear accounts
+      try {
+        await client.from('accounts').delete().neq('id', '___none___');
+      } catch (e: any) {
+        logger.debug(`Error clearing accounts: ${e?.message}`);
+      }
+    }
+
+    if (options.clearNodes) {
+      logger.info('Clearing worker nodes from backend_nodes...');
+      try {
+        let q = client.from('backend_nodes').delete().neq('id', '___none___');
+        if (options.preserveNodeId) {
+          q = q.neq('id', options.preserveNodeId);
+        }
+        await q;
+      } catch (e: any) {
+        logger.debug(`Error clearing backend_nodes: ${e?.message}`);
+      }
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    logger.error(`clearDatabaseTables error: ${err?.message}`);
+    return { success: false, error: err?.message };
+  }
+}
+
+/**
  * Loads all backup data from Secondary Supabase and restores it into Primary Supabase.
  * Returns the counts and full data of all restored records.
  */
@@ -653,6 +717,9 @@ export async function loadFromSecondarySupabase(secondaryConfig?: { url: string;
   }
 
   logger.info('Starting Load Backup from Secondary Supabase into Primary Database...');
+  // Clean wipe accounts and tokens first to avoid duplicate keys or leftover residue
+  await clearDatabaseTables({ clearAccounts: true });
+
   const counts = { nodes: 0, accounts: 0, tokens: 0, settings: 0, permissions: 0, ignoreList: 0 };
   const loadedData: { nodes: any[]; accounts: any[]; tokens: any[]; settings: any[]; permissions: any[]; ignoreList: any[] } = {
     nodes: [],

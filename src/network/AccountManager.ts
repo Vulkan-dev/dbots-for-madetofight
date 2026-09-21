@@ -258,8 +258,28 @@ export class AccountManager extends EventEmitter {
     this.joinScheduler.cancelJoin(accountId);
 
     if (bot) {
-      try { await bot.dispose(); } catch {}
+      try {
+        await bot.dispose();
+      } catch (err: any) {
+        logger.warn(`Error during bot.dispose() for '${accountId}': ${err?.message}`);
+      }
+      let waitCount = 0;
+      while (bot.getState() !== ConnectionState.DISCONNECTED && waitCount < 15) {
+        await new Promise(res => setTimeout(res, 100));
+        waitCount++;
+      }
       this.bots.delete(accountId);
+    } else {
+      // Check if account is active on a remote node and command clean disconnection first
+      try {
+        const accRow = await getAccountById(accountId);
+        if (accRow && accRow.node_id && accRow.node_id !== this.appConfig.nodeId) {
+          await insertCommand(accRow.node_id, accountId, 'SAFE_DISCONNECT_ACCOUNT', { accountId });
+          await new Promise(res => setTimeout(res, 1500));
+        }
+      } catch (err: any) {
+        logger.debug(`Remote disconnect check failed for '${accountId}': ${err?.message}`);
+      }
     }
 
     await TokenStorage.clearTokens(accountId);
@@ -278,7 +298,7 @@ export class AccountManager extends EventEmitter {
     }
 
     this.emit('accountRemoved', accountId, xboxUsername);
-    logger.info(`Account '${accountId}' permanently removed and deleted from database`);
+    logger.info(`Account '${accountId}' cleanly disconnected and permanently removed from database`);
     return true;
   }
 
@@ -287,20 +307,7 @@ export class AccountManager extends EventEmitter {
    * Used only by the master's /removebot Discord command.
    */
   public async forceRemoveAccount(accountId: string): Promise<boolean> {
-    const bot = this.bots.get(accountId);
-    this.joinScheduler.cancelJoin(accountId);
-
-    if (bot) {
-      try { await bot.dispose(); } catch {}
-      this.bots.delete(accountId);
-    }
-
-    await TokenStorage.clearTokens(accountId);
-    await deleteAccount(accountId);
-
-    this.emit('accountRemoved', accountId, bot?.xboxUsername);
-    logger.info(`Account '${accountId}' permanently deleted from Supabase`);
-    return true;
+    return this.removeAccount(accountId);
   }
 
   public async clearAccountAuthAndRetry(accountId: string): Promise<boolean> {
@@ -314,15 +321,36 @@ export class AccountManager extends EventEmitter {
 
   /**
    * Moves an account to a different node.
-   * Stops the bot on this node, updates Supabase node_id, and notifies target node.
+   * Completely disconnects the bot first, confirms offline state, transfers tokens,
+   * updates Supabase node_id, and notifies target node.
    */
   public async moveAccount(accountId: string, targetNodeId: string): Promise<boolean> {
     const bot = this.bots.get(accountId);
     this.joinScheduler.cancelJoin(accountId);
 
     if (bot) {
-      try { await bot.dispose(); } catch {}
+      try {
+        await bot.dispose();
+      } catch (err: any) {
+        logger.warn(`Error during bot.dispose() for move '${accountId}': ${err?.message}`);
+      }
+      let waitCount = 0;
+      while (bot.getState() !== ConnectionState.DISCONNECTED && waitCount < 15) {
+        await new Promise(res => setTimeout(res, 100));
+        waitCount++;
+      }
       this.bots.delete(accountId);
+    } else {
+      // If hosted on another node, signal that node to cleanly disconnect before moving
+      try {
+        const accRow = await getAccountById(accountId);
+        if (accRow && accRow.node_id && accRow.node_id !== this.appConfig.nodeId) {
+          await insertCommand(accRow.node_id, accountId, 'SAFE_DISCONNECT_ACCOUNT', { accountId });
+          await new Promise(res => setTimeout(res, 1500));
+        }
+      } catch (err: any) {
+        logger.debug(`Remote disconnect check for move failed for '${accountId}': ${err?.message}`);
+      }
     }
 
     // Transfer tokens to target node
@@ -341,7 +369,7 @@ export class AccountManager extends EventEmitter {
     }
 
     this.emit('accountRemoved', accountId, bot?.xboxUsername);
-    logger.info(`Account '${accountId}' moved to node '${targetNodeId}'`, accountId);
+    logger.info(`Account '${accountId}' cleanly disconnected and moved to node '${targetNodeId}'`, accountId);
     return true;
   }
 
@@ -642,6 +670,24 @@ export class AccountManager extends EventEmitter {
 
       case 'REMOVE_ACCOUNT':
         if (account_id) await this.removeAccount(account_id);
+        break;
+
+      case 'SAFE_DISCONNECT_ACCOUNT':
+        if (account_id) {
+          this.joinScheduler.cancelJoin(account_id);
+          const bot = this.bots.get(account_id);
+          if (bot) {
+            try { await bot.dispose(); } catch {}
+            this.bots.delete(account_id);
+          }
+          await updateAccountFields(account_id, { auto_connect: false, status: 'DISCONNECTED' }).catch(() => {});
+          logger.info(`Cleanly disconnected and disposed bot '${account_id}' per SAFE_DISCONNECT_ACCOUNT`, account_id);
+        }
+        break;
+
+      case 'DISCONNECT_ALL':
+        await this.disconnectAll();
+        logger.info('Cleanly disconnected all local bots per DISCONNECT_ALL command');
         break;
 
       case 'DELETE_DISCORD_CHANNEL':

@@ -146,16 +146,28 @@ export class KeepAliveEngine {
 
   /**
    * Safely handles teleport landing.
-   * Resets active momentum, updates position, and initiates safe descent if hovering in mid-air.
+   * Resets active momentum, updates position, and initiates safe descent or gravity fall if in mid-air.
+   * Never prints falling log spam.
    */
-  public handleTeleportLanding(pos: Vector3D, groundTargetY?: number): void {
+  public handleTeleportLanding(pos: Vector3D, groundTargetY?: number, serverOnGround?: boolean): void {
     this.position = { x: pos.x, y: pos.y, z: pos.z };
     this.resetPhysicsAndClearTarget();
 
-    if (groundTargetY != null && pos.y > groundTargetY + 0.1) {
+    if (serverOnGround === true) {
+      this.isGrounded = true;
+      this.targetFloorY = null;
+      this.floatingTicks = 0;
+      this.addInputFlag('vertical_collision');
+    } else if (groundTargetY != null && pos.y > groundTargetY + 0.1) {
       // Bot is floating above the expected ground block
       this.isGrounded = false;
       this.targetFloorY = groundTargetY;
+      this.floatingTicks = 0;
+      this.inputFlags.delete('vertical_collision');
+    } else if (serverOnGround === false) {
+      // Mid-air landing without ground block: let gravity pull down naturally without freezing
+      this.isGrounded = false;
+      this.targetFloorY = null;
       this.floatingTicks = 0;
       this.inputFlags.delete('vertical_collision');
     } else {
@@ -166,8 +178,20 @@ export class KeepAliveEngine {
     }
   }
 
+  public setGrounded(grounded: boolean): void {
+    this.isGrounded = grounded;
+    if (grounded) {
+      this.targetFloorY = null;
+      this.floatingTicks = 0;
+      this.addInputFlag('vertical_collision');
+    } else {
+      this.inputFlags.delete('vertical_collision');
+    }
+  }
+
   private isSneakingState: boolean = false;
   private stopSneakTicks: number = 0;
+  public isCrouchLocked: boolean = false;
 
   public isContinuousJump: boolean = false;
   private jumpCooldownTicks: number = 0;
@@ -175,8 +199,16 @@ export class KeepAliveEngine {
   /**
    * Toggles sneak state with proper Geyser / Bedrock transition flags.
    * Keeps sneaking and sneak_down active while crouching.
+   * When isLocked is true, prevents auto-uncrouch from other game systems.
    */
-  public setSneak(enabled: boolean): void {
+  public setSneak(enabled: boolean, isLocked?: boolean): void {
+    if (isLocked !== undefined) {
+      this.isCrouchLocked = isLocked;
+    }
+    // If crouch is locked ON, never allow background systems or game events to uncrouch the bot
+    if (this.isCrouchLocked && !enabled) {
+      return;
+    }
     if (this.isSneakingState === enabled) {
       if (enabled) {
         this.sendSneakPlayerAction(true);
@@ -436,11 +468,16 @@ export class KeepAliveEngine {
             this.floatingTicks = 0;
             currentFlags.add('vertical_collision');
           }
-        } else if (this.floatingTicks > 20) {
-          // Safety timeout: after 1 second without floor target, restore grounded state
-          this.isGrounded = true;
-          this.floatingTicks = 0;
-          currentFlags.add('vertical_collision');
+        } else {
+          // If no target floor is specified, let gravity pull down naturally without freezing
+          const gravityStep = 0.2;
+          deltaY = -gravityStep;
+          this.position.y = Number((this.position.y - gravityStep).toFixed(4));
+          if (this.floatingTicks > 60) {
+            this.isGrounded = true;
+            this.floatingTicks = 0;
+            currentFlags.add('vertical_collision');
+          }
         }
       } else if (this.jumpTicksRemaining <= 0) {
         // When standing on ground (not jumping), signal vertical_collision

@@ -324,6 +324,24 @@ export class TokenStorage {
   }
 
   /**
+   * Clears all cached auth token directories on disk.
+   */
+  public static async clearAllTokens(): Promise<void> {
+    if (fs.existsSync(PROFILES_BASE)) {
+      try {
+        fs.rmSync(PROFILES_BASE, { recursive: true, force: true });
+      } catch {}
+    }
+    const legacyBase = path.resolve(process.cwd(), 'profile');
+    if (fs.existsSync(legacyBase)) {
+      try {
+        fs.rmSync(legacyBase, { recursive: true, force: true });
+      } catch {}
+    }
+    logger.info('Purged all token cache files from disk');
+  }
+
+  /**
    * Transfers tokens to a new node — updates node_id in Supabase but KEEPS the tokens.
    * Only removes local files.
    */

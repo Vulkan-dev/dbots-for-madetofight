@@ -471,11 +471,8 @@ export class BedrockBot extends EventEmitter {
     });
 
     this.playerHitResponse.setCrouchCallback((isSneaking: boolean, isCompleted?: boolean) => {
-      // If user has Always Crouch toggled ON, never leave the bot uncrouched!
-      if (this.actionController.isCrouching) {
-        if (isCompleted) {
-          this.actionController.reassertPersistentStates();
-        }
+      // If user has Always Crouch toggled ON, never allow hit reaction to uncrouch or modify sneak!
+      if (this.actionController.persistentCrouch) {
         return;
       }
       if (this.keepAliveEngine) {
@@ -819,11 +816,9 @@ export class BedrockBot extends EventEmitter {
       }
 
       // Ensure action controller toggles and physics inputs are cleanly reset on initial connect
-      if (!this.actionController.isCrouching) {
-        this.actionController.resetAllStates();
-      } else {
-        // Re-apply active crouch toggle to newly spawned KeepAliveEngine
-        this.keepAliveEngine?.setSneak(true);
+      this.actionController.resetAllStates();
+      if (this.actionController.persistentCrouch) {
+        this.actionController.reassertPersistentStates();
       }
 
       // If a saved AFK spot exists in tracker or LocationStorage, restore and enforce 5-minute AFK monitoring
@@ -874,11 +869,14 @@ export class BedrockBot extends EventEmitter {
               }
             }
             if (this.keepAliveEngine) {
-              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY);
+              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY, packet.on_ground);
             }
             this.actionController.resetAllStates();
           } else if (this.keepAliveEngine) {
             this.keepAliveEngine.updatePosition(this.currentPosition);
+            if (packet.on_ground !== undefined) {
+              this.keepAliveEngine.setGrounded(Boolean(packet.on_ground));
+            }
           }
 
           if (this.keepAliveEngine && packet.pitch != null && packet.yaw != null) {
