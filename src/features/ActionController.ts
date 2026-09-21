@@ -110,18 +110,16 @@ export class ActionController {
     }
 
     // 2. Also send player_action start_sneak/stop_sneak for vanilla BDS compatibility
-    if (client && runtimeId != null) {
+    if (client) {
       try {
-        const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 0n;
-        if (entityId !== 0n) {
-          client.queue('player_action', {
-            runtime_entity_id: entityId,
-            action: this.persistentCrouch ? 'start_sneak' : 'stop_sneak',
-            position: blockPos,
-            result_position: { x: 0, y: 0, z: 0 },
-            face: 0,
-          });
-        }
+        const entityId = (runtimeId != null && runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+        client.queue('player_action', {
+          runtime_entity_id: entityId,
+          action: this.persistentCrouch ? 'start_sneak' : 'stop_sneak',
+          position: { x: 0, y: 0, z: 0 },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
+        });
       } catch (err) {
         logger.debug('Failed to send sneak player_action packet', this.accountId);
       }
@@ -155,25 +153,22 @@ export class ActionController {
     }
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
-    if (client && runtimeId != null) {
+    if (client) {
       try {
-        const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 0n;
-        if (entityId !== 0n) {
-          const pos = this.getPosition ? this.getPosition() : { x: 0, y: 0, z: 0 };
-          client.queue('player_action', {
-            runtime_entity_id: entityId,
-            action: 'start_sneak',
-            position: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) },
-            result_position: { x: 0, y: 0, z: 0 },
-            face: 0,
-          });
-          client.queue('player_input', {
-            motion_x: 0,
-            motion_z: 0,
-            jumping: false,
-            sneaking: true,
-          });
-        }
+        const entityId = (runtimeId != null && runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+        client.queue('player_action', {
+          runtime_entity_id: entityId,
+          action: 'start_sneak',
+          position: { x: 0, y: 0, z: 0 },
+          result_position: { x: 0, y: 0, z: 0 },
+          face: 0,
+        });
+        client.queue('player_input', {
+          motion_x: 0,
+          motion_z: 0,
+          jumping: false,
+          sneaking: true,
+        });
       } catch {}
     }
   }
@@ -845,30 +840,24 @@ export class ActionController {
     if (this.persistentCrouch) {
       this.reassertPersistentStates();
     } else {
-      if (engine) {
-        engine.setSneak(false);
-      }
       const client = this.getClient();
       const runtimeId = this.getRuntimeEntityId();
-      if (client && runtimeId != null) {
+      if (client) {
         try {
-          const entityId = (runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 0n;
-          if (entityId !== 0n) {
-            const pos = this.getPosition ? this.getPosition() : { x: 0, y: 0, z: 0 };
-            client.queue('player_action', {
-              runtime_entity_id: entityId,
-              action: 'stop_sneak',
-              position: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) },
-              result_position: { x: 0, y: 0, z: 0 },
-              face: 0,
-            });
-            client.queue('player_input', {
-              motion_x: 0,
-              motion_z: 0,
-              jumping: false,
-              sneaking: false,
-            });
-          }
+          const entityId = (runtimeId != null && runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+          client.queue('player_action', {
+            runtime_entity_id: entityId,
+            action: 'stop_sneak',
+            position: { x: 0, y: 0, z: 0 },
+            result_position: { x: 0, y: 0, z: 0 },
+            face: 0,
+          });
+          client.queue('player_input', {
+            motion_x: 0,
+            motion_z: 0,
+            jumping: false,
+            sneaking: false,
+          });
         } catch {}
       }
     }

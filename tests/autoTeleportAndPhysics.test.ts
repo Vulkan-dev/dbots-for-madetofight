@@ -112,56 +112,36 @@ async function runTests() {
   }
   console.log('✔ Auto-tpaccept and auto-tpahere pattern matching and whitelist validation passed.');
 
-  // ── 4. Realistic Knockback & Push Motion Simulation ─────────────────────────
-  const physicsEngine = new KeepAliveEngine(mockClient, 'physicsBot', { x: 50, y: 64, z: 50 });
-  (physicsEngine as any).isRunning = true;
+  // ── 4. Crouch Toggle (Always Crouch / Uncrouch) ──────────────────────────────
+  const queuedPackets: Array<{ name: string; data: any }> = [];
+  const crouchClient = {
+    queue: (name: string, data: any) => {
+      queuedPackets.push({ name, data });
+    },
+  };
+  const crouchEngine = new KeepAliveEngine(crouchClient as any, 'crouchBot', { x: 50, y: 64, z: 50 });
 
-  // Apply knockback from a hit or push
-  physicsEngine.applyMotion({ x: 0.4, y: 0.35, z: -0.3 });
-  assert(physicsEngine.isGrounded === false, 'Knockback popping bot into air must set isGrounded=false');
-  assert(physicsEngine.velocity.x === 0.4, 'Velocity X must be set');
-  assert(physicsEngine.velocity.y === 0.35, 'Velocity Y must be set');
+  // Toggle ON
+  crouchEngine.setSneak(true);
+  assert((crouchEngine as any).isSneakingState === true, 'Sneak state must be true on toggle ON');
+  const startSneakPacket = queuedPackets.find(p => p.name === 'player_action' && p.data.action === 'start_sneak');
+  assert(startSneakPacket != null, 'Must send player_action start_sneak packet');
+  assert(startSneakPacket!.data.position.x === 0 && startSneakPacket!.data.position.y === 0 && startSneakPacket!.data.position.z === 0, 'position must be zero vector');
 
-  const prevX = physicsEngine.position.x;
-  const prevY = physicsEngine.position.y;
-  (physicsEngine as any).onTick();
+  const playerInputSneak = queuedPackets.find(p => p.name === 'player_input' && p.data.sneaking === true);
+  assert(playerInputSneak != null, 'Must send player_input with sneaking=true');
 
-  assert(physicsEngine.position.x > prevX, 'Bot position X must move with knockback');
-  assert(physicsEngine.position.y > prevY, 'Bot position Y must arc upward with knockback');
-  assert(physicsEngine.velocity.x < 0.4, 'Horizontal velocity must decay from friction');
-  console.log('✔ Realistic push & knockback velocity physics validated.');
-
-  // ── 5. Gravity Fall When Floating Without Blocks (e.g. /home 1 in mid-air) ──
-  // Bot lands in mid-air with no floor underneath (server on_ground = false)
-  physicsEngine.handleTeleportLanding({ x: 200, y: 100, z: 200 }, undefined, false);
-  assert(physicsEngine.isGrounded === false, 'Mid-air landing without ground must have isGrounded=false');
-
-  const startFallY = physicsEngine.position.y;
-  for (let i = 0; i < 10; i++) {
-    (physicsEngine as any).onTick();
-  }
-  assert(physicsEngine.position.y < startFallY, 'Bot must fall downward under gravity when no blocks are beneath it');
-  assert(physicsEngine.isGrounded === false, 'Bot must continue falling and NOT freeze in mid-air');
-
-  // Server informs bot that it landed on solid ground (move_player on_ground=true)
-  physicsEngine.setGrounded(true);
-  assert(physicsEngine.isGrounded === true, 'setGrounded(true) must set isGrounded=true');
-  assert(physicsEngine.velocity.y === 0, 'Grounded bot must have vertical velocity reset to 0');
-  console.log('✔ Mid-air gravity fall and server ground resolution validated.');
-
-  // ── 6. Crouch Toggle (Always Crouch / Uncrouch) ──────────────────────────────
-  physicsEngine.setSneak(true);
-  assert((physicsEngine as any).isSneakingState === true, 'Sneak state must be true on toggle ON');
-  assert((physicsEngine as any).inputFlags.has('sneaking'), 'inputFlags must include sneaking');
-  assert((physicsEngine as any).inputFlags.has('persist_sneak'), 'inputFlags must include persist_sneak');
-
-  physicsEngine.setSneak(false);
-  assert((physicsEngine as any).isSneakingState === false, 'Sneak state must be false on toggle OFF');
-  assert(!(physicsEngine as any).inputFlags.has('sneaking'), 'sneaking must be cleared from inputFlags');
-  assert((physicsEngine as any).stopSneakTicks > 0, 'stopSneakTicks must be active during uncrouch transition');
+  // Toggle OFF
+  queuedPackets.length = 0;
+  crouchEngine.setSneak(false);
+  assert((crouchEngine as any).isSneakingState === false, 'Sneak state must be false on toggle OFF');
+  const stopSneakPacket = queuedPackets.find(p => p.name === 'player_action' && p.data.action === 'stop_sneak');
+  assert(stopSneakPacket != null, 'Must send player_action stop_sneak packet');
+  assert(stopSneakPacket!.data.position.x === 0 && stopSneakPacket!.data.position.y === 0 && stopSneakPacket!.data.position.z === 0, 'position must be zero vector');
+  assert((crouchEngine as any).stopSneakTicks > 0, 'stopSneakTicks must be active during uncrouch transition');
   console.log('✔ Crouch toggle ON / OFF input transitions validated.');
 
-  // ── 7. AFKSpotTracker onResetPhysics callback ────────────────────────────────
+  // ── 5. AFKSpotTracker onResetPhysics callback ────────────────────────────────
   let resetCalled: boolean = false;
   const tracker = new AFKSpotTracker('Bot1', 'node-1', 1000, 5.0);
   tracker.setCallbacks(

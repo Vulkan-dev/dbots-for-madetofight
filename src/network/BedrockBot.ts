@@ -874,14 +874,11 @@ export class BedrockBot extends EventEmitter {
               }
             }
             if (this.keepAliveEngine) {
-              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY, packet.on_ground);
+              this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY);
             }
             this.actionController.resetAllStates();
           } else if (this.keepAliveEngine) {
             this.keepAliveEngine.updatePosition(this.currentPosition);
-            if (packet.on_ground !== undefined) {
-              this.keepAliveEngine.setGrounded(Boolean(packet.on_ground));
-            }
           }
 
           if (this.keepAliveEngine && packet.pitch != null && packet.yaw != null) {
@@ -909,17 +906,6 @@ export class BedrockBot extends EventEmitter {
           packet.position,
           this.currentPosition
         );
-      }
-    });
-
-    // Handle incoming entity motion (knockback from attacks, explosions, or collision push from other players)
-    this.client.on('set_entity_motion', (packet: any) => {
-      const runtimeId = packet.runtime_entity_id ?? packet.runtime_id ?? packet.entity_id;
-      if (this.isSelfEntity(runtimeId)) {
-        if (packet.velocity) {
-          logger.debug(`Applying incoming entity motion: vx=${packet.velocity.x}, vy=${packet.velocity.y}, vz=${packet.velocity.z}`, this.accountId);
-          this.keepAliveEngine?.applyMotion(packet.velocity);
-        }
       }
     });
 

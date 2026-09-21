@@ -33,7 +33,6 @@ export class KeepAliveEngine {
   public isGrounded: boolean = true;
   public targetFloorY: number | null = null;
   private floatingTicks: number = 0;
-  public velocity: Vector3D = { x: 0, y: 0, z: 0 };
 
   private onLatencyBound: ((packet: any) => void) | null = null;
   private onTickSyncBound: ((packet: any) => void) | null = null;
@@ -61,40 +60,6 @@ export class KeepAliveEngine {
       } else {
         this.position = { x: pos.x, y: pos.y, z: pos.z };
       }
-    }
-  }
-
-  /**
-   * Applies realistic Minecraft knockback or collision push velocity.
-   */
-  public applyMotion(vel: Vector3D): void {
-    if (!vel) return;
-    const vx = typeof vel.x === 'number' && !isNaN(vel.x) ? Math.max(-5, Math.min(5, vel.x)) : 0;
-    const vy = typeof vel.y === 'number' && !isNaN(vel.y) ? Math.max(-5, Math.min(5, vel.y)) : 0;
-    const vz = typeof vel.z === 'number' && !isNaN(vel.z) ? Math.max(-5, Math.min(5, vel.z)) : 0;
-
-    this.velocity.x += vx;
-    this.velocity.y += vy;
-    this.velocity.z += vz;
-
-    if (this.velocity.y > 0.05 || Math.hypot(this.velocity.x, this.velocity.z) > 0.05) {
-      this.isGrounded = false;
-      this.inputFlags.delete('vertical_collision');
-    }
-  }
-
-  /**
-   * Updates grounded status directly from server authoritative events (e.g. move_player).
-   */
-  public setGrounded(grounded: boolean): void {
-    this.isGrounded = grounded;
-    if (grounded) {
-      this.velocity.y = 0;
-      this.targetFloorY = null;
-      this.floatingTicks = 0;
-      this.addInputFlag('vertical_collision');
-    } else {
-      this.inputFlags.delete('vertical_collision');
     }
   }
 
@@ -170,7 +135,6 @@ export class KeepAliveEngine {
     this.lastJumpingState = false;
     this.swingTicksRemaining = 0;
     this.itemUseTicksRemaining = 0;
-    this.velocity = { x: 0, y: 0, z: 0 };
     this.inputFlags.delete('jumping');
     this.inputFlags.delete('jump_down');
     this.inputFlags.delete('jump_current_raw');
@@ -182,26 +146,16 @@ export class KeepAliveEngine {
 
   /**
    * Safely handles teleport landing.
-   * Resets active momentum, updates position, and initiates safe descent or gravity fall if hovering in mid-air.
+   * Resets active momentum, updates position, and initiates safe descent if hovering in mid-air.
    */
-  public handleTeleportLanding(pos: Vector3D, groundTargetY?: number, serverOnGround?: boolean): void {
+  public handleTeleportLanding(pos: Vector3D, groundTargetY?: number): void {
     this.position = { x: pos.x, y: pos.y, z: pos.z };
     this.resetPhysicsAndClearTarget();
 
-    if (serverOnGround === true) {
-      this.isGrounded = true;
-      this.targetFloorY = null;
-      this.floatingTicks = 0;
-      this.addInputFlag('vertical_collision');
-    } else if (groundTargetY != null && pos.y > groundTargetY + 0.1) {
+    if (groundTargetY != null && pos.y > groundTargetY + 0.1) {
       // Bot is floating above the expected ground block
       this.isGrounded = false;
       this.targetFloorY = groundTargetY;
-      this.floatingTicks = 0;
-      this.inputFlags.delete('vertical_collision');
-    } else if (serverOnGround === false) {
-      this.isGrounded = false;
-      this.targetFloorY = null;
       this.floatingTicks = 0;
       this.inputFlags.delete('vertical_collision');
     } else {
@@ -220,16 +174,11 @@ export class KeepAliveEngine {
 
   /**
    * Toggles sneak state with proper Geyser / Bedrock transition flags.
-   * Keeps sneaking, sneak_down, and persist_sneak active while crouching.
-   * change_height is sent to synchronize server bounding-box height.
+   * Keeps sneaking and sneak_down active while crouching.
    */
   public setSneak(enabled: boolean): void {
     if (this.isSneakingState === enabled) {
       if (enabled) {
-        this.inputFlags.add('sneaking');
-        this.inputFlags.add('sneak_down');
-        this.inputFlags.add('change_height');
-        this.inputFlags.add('persist_sneak');
         this.sendSneakPlayerAction(true);
       }
       return;
@@ -237,20 +186,9 @@ export class KeepAliveEngine {
     this.isSneakingState = enabled;
     if (enabled) {
       this.stopSneakTicks = 0;
-      this.inputFlags.add('sneaking');
-      this.inputFlags.add('sneak_down');
-      this.inputFlags.add('change_height');
-      this.inputFlags.add('persist_sneak');
-      this.inputFlags.add('start_sneaking');
       this.sendSneakPlayerAction(true);
     } else {
-      this.inputFlags.delete('sneaking');
-      this.inputFlags.delete('sneak_down');
-      this.inputFlags.delete('persist_sneak');
-      this.inputFlags.delete('start_sneaking');
-      this.inputFlags.add('stop_sneaking');
-      this.inputFlags.add('change_height');
-      this.stopSneakTicks = 5; // maintain stop_sneaking transition for 5 ticks (250ms)
+      this.stopSneakTicks = 3; // pulse stop_sneaking transition for 3 ticks (150ms)
       this.sendSneakPlayerAction(false);
     }
   }
@@ -259,17 +197,11 @@ export class KeepAliveEngine {
     if (!this.client) return;
     try {
       const rid = this.getRuntimeEntityId ? this.getRuntimeEntityId() : 0n;
-      const entityId = (rid != null && rid !== 0n && rid !== '0') ? BigInt(rid) : 0n;
-      if (entityId === 0n) return;
-      const blockPos = {
-        x: Math.floor(this.position.x),
-        y: Math.floor(this.position.y),
-        z: Math.floor(this.position.z),
-      };
+      const entityId = (rid != null && rid !== 0n && rid !== '0') ? BigInt(rid) : 1n;
       this.client.queue('player_action', {
         runtime_entity_id: entityId,
         action: isSneaking ? 'start_sneak' : 'stop_sneak',
-        position: blockPos,
+        position: { x: 0, y: 0, z: 0 },
         result_position: { x: 0, y: 0, z: 0 },
         face: 0,
       });
@@ -467,9 +399,6 @@ export class KeepAliveEngine {
       this.itemUseTicksRemaining > 0 ||
       this.isSneakingState ||
       this.stopSneakTicks > 0 ||
-      Math.abs(this.velocity.x) > 0.001 ||
-      Math.abs(this.velocity.y) > 0.001 ||
-      Math.abs(this.velocity.z) > 0.001 ||
       this.inputFlags.size > 0;
 
     // Subtle anti-idle micro-look every 45 seconds (900 ticks) to reset server idle timer without swinging arm
@@ -486,52 +415,32 @@ export class KeepAliveEngine {
       inputDataArray = KeepAliveEngine.DEFAULT_GROUND_INPUT as unknown as string[];
       deltaY = 0;
     } else {
-      // DYNAMIC PATH: Handle jumps, swings, sneak transitions, mid-air descent, knockback velocity
+      // DYNAMIC PATH: Handle jumps, swings, sneak transitions, mid-air descent
       const currentFlags = new Set(this.inputFlags);
 
-      // Process horizontal knockback / push velocity decay
-      if (Math.abs(this.velocity.x) > 0.001 || Math.abs(this.velocity.z) > 0.001) {
-        deltaX += this.velocity.x;
-        deltaZ += this.velocity.z;
-        this.position.x = Number((this.position.x + this.velocity.x).toFixed(4));
-        this.position.z = Number((this.position.z + this.velocity.z).toFixed(4));
-
-        const drag = this.isGrounded ? 0.546 : 0.91;
-        this.velocity.x *= drag;
-        this.velocity.z *= drag;
-        if (Math.abs(this.velocity.x) < 0.001) this.velocity.x = 0;
-        if (Math.abs(this.velocity.z) < 0.001) this.velocity.z = 0;
-      }
-
-      // Mid-air descent logic and gravity fall
+      // Mid-air descent logic if floating upon teleport / home arrival
       if (!this.isGrounded) {
         currentFlags.delete('vertical_collision');
         this.floatingTicks++;
         if (this.targetFloorY != null) {
           const descentStep = 0.15;
           if (this.position.y > this.targetFloorY + descentStep) {
-            deltaY -= descentStep;
+            deltaY = -descentStep;
             this.position.y = Number((this.position.y - descentStep).toFixed(4));
           } else {
             // Reached ground floor
-            deltaY += Number((this.targetFloorY - this.position.y).toFixed(4));
+            deltaY = Number((this.targetFloorY - this.position.y).toFixed(4));
             this.position.y = this.targetFloorY;
             this.isGrounded = true;
             this.targetFloorY = null;
-            this.velocity.y = 0;
             this.floatingTicks = 0;
             currentFlags.add('vertical_collision');
           }
-        } else {
-          // Natural Minecraft gravity fall when mid-air with no floor
-          this.velocity.y = Math.max(-3.92, (this.velocity.y - 0.08) * 0.98);
-          const stepY = this.velocity.y;
-          deltaY += stepY;
-          this.position.y = Number((this.position.y + stepY).toFixed(4));
-          if (this.position.y <= -64) {
-            this.position.y = -64;
-            this.velocity.y = 0;
-          }
+        } else if (this.floatingTicks > 20) {
+          // Safety timeout: after 1 second without floor target, restore grounded state
+          this.isGrounded = true;
+          this.floatingTicks = 0;
+          currentFlags.add('vertical_collision');
         }
       } else if (this.jumpTicksRemaining <= 0) {
         // When standing on ground (not jumping), signal vertical_collision
