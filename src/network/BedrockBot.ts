@@ -416,14 +416,16 @@ export class BedrockBot extends EventEmitter {
             runtime_entity_id: this.runtimeEntityId,
           });
 
-          // Reassert persistent crouch toggle stance after respawning
-          setTimeout(() => {
-            try {
-              if (this.state === ConnectionState.CONNECTED) {
-                this.actionController.reassertPersistentStates();
-              }
-            } catch {}
-          }, 500);
+          // Reassert persistent crouch toggle stance after respawning across multiple intervals
+          [200, 600, 1200, 2500].forEach(delay => {
+            setTimeout(() => {
+              try {
+                if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
+                  this.actionController.reassertPersistentStates();
+                }
+              } catch {}
+            }, delay);
+          });
         } catch (err) {
           logger.error('Failed to send auto-respawn packets', this.accountId, err);
         }
@@ -805,7 +807,8 @@ export class BedrockBot extends EventEmitter {
           this.client,
           this.accountId,
           this.currentPosition,
-          () => this.runtimeEntityId
+          () => this.runtimeEntityId,
+          this.actionController.persistentCrouch
         );
         if (packet.rotation) {
           const initPitch = typeof packet.rotation.x === 'number' ? packet.rotation.x : 0;
@@ -819,6 +822,13 @@ export class BedrockBot extends EventEmitter {
       this.actionController.resetAllStates();
       if (this.actionController.persistentCrouch) {
         this.actionController.reassertPersistentStates();
+        [100, 300, 700, 1500, 3000].forEach(delay => {
+          setTimeout(() => {
+            if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
+              this.actionController.reassertPersistentStates();
+            }
+          }, delay);
+        });
       }
 
       // If a saved AFK spot exists in tracker or LocationStorage, restore and enforce 5-minute AFK monitoring
@@ -835,6 +845,21 @@ export class BedrockBot extends EventEmitter {
         }
       } catch {
         // ignore
+      }
+    });
+
+    this.client.on('play_status', (packet: any) => {
+      const status = packet?.status;
+      if (status === 'player_spawn' || status === 3) {
+        if (this.actionController.persistentCrouch) {
+          [200, 800, 1800].forEach(delay => {
+            setTimeout(() => {
+              if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
+                this.actionController.reassertPersistentStates();
+              }
+            }, delay);
+          });
+        }
       }
     });
 
@@ -872,6 +897,15 @@ export class BedrockBot extends EventEmitter {
               this.keepAliveEngine.handleTeleportLanding(this.currentPosition, groundTargetY, packet.on_ground);
             }
             this.actionController.resetAllStates();
+            if (this.actionController.persistentCrouch) {
+              [100, 400, 1000].forEach(delay => {
+                setTimeout(() => {
+                  if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
+                    this.actionController.reassertPersistentStates();
+                  }
+                }, delay);
+              });
+            }
           } else if (this.keepAliveEngine) {
             this.keepAliveEngine.updatePosition(this.currentPosition);
             if (packet.on_ground !== undefined) {
@@ -1028,6 +1062,16 @@ export class BedrockBot extends EventEmitter {
       } else if (state === 2 || state === 'client_ready_to_spawn') {
         this.lastHealth = 20;
         this.autoRespawn.reset();
+      }
+
+      if (this.actionController.persistentCrouch) {
+        [100, 400, 1000, 2500].forEach(delay => {
+          setTimeout(() => {
+            if (this.state === ConnectionState.CONNECTED && this.actionController.persistentCrouch) {
+              this.actionController.reassertPersistentStates();
+            }
+          }, delay);
+        });
       }
     });
 

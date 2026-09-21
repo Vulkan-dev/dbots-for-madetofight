@@ -1,7 +1,7 @@
 import { Client } from 'bedrock-protocol';
 import { logger } from '../utils/logger';
-import { Vector3D } from '../utils/MathUtils';
-import { KeepAliveEngine } from '../network/KeepAliveEngine';
+import { KeepAliveEngine, Vector3D } from '../network/KeepAliveEngine';
+import { PersistentActionStorage } from '../storage/PersistentActionStorage';
 
 export interface ActionStates {
   isCrouching: boolean;
@@ -70,6 +70,12 @@ export class ActionController {
     this.getInventory = getInventory;
     this.switchSlotCallback = switchSlotCallback;
     this.findItemSlotCallback = findItemSlotCallback;
+
+    // Restore persistent crouch stance from storage if previously enabled
+    if (this.accountId) {
+      this.persistentCrouch = PersistentActionStorage.isCrouched(this.accountId);
+      this.isCrouching = this.persistentCrouch;
+    }
   }
 
   public getStates(): ActionStates {
@@ -93,6 +99,7 @@ export class ActionController {
     const targetState = boolState !== undefined ? boolState : !this.persistentCrouch;
     this.persistentCrouch = targetState;
     this.isCrouching = targetState;
+    PersistentActionStorage.setCrouch(this.accountId, targetState);
 
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
@@ -116,8 +123,8 @@ export class ActionController {
         client.queue('player_action', {
           runtime_entity_id: entityId,
           action: this.persistentCrouch ? 'start_sneak' : 'stop_sneak',
-          position: { x: 0, y: 0, z: 0 },
-          result_position: { x: 0, y: 0, z: 0 },
+          position: blockPos,
+          result_position: blockPos,
           face: 0,
         });
       } catch (err) {
@@ -153,14 +160,20 @@ export class ActionController {
     }
     const client = this.getClient();
     const runtimeId = this.getRuntimeEntityId();
+    const pos = this.getPosition ? this.getPosition() : { x: 0, y: 0, z: 0 };
+    const blockPos = {
+      x: Math.floor(pos.x),
+      y: Math.floor(pos.y),
+      z: Math.floor(pos.z),
+    };
     if (client) {
       try {
         const entityId = (runtimeId != null && runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
         client.queue('player_action', {
           runtime_entity_id: entityId,
           action: 'start_sneak',
-          position: { x: 0, y: 0, z: 0 },
-          result_position: { x: 0, y: 0, z: 0 },
+          position: blockPos,
+          result_position: blockPos,
           face: 0,
         });
         client.queue('player_input', {
@@ -800,6 +813,9 @@ export class ActionController {
     this.isSpamClicking = false;
     this.isCrouching = false;
     this.persistentCrouch = false;
+    if (this.accountId) {
+      PersistentActionStorage.setCrouch(this.accountId, false);
+    }
   }
 
   /**
@@ -842,11 +858,17 @@ export class ActionController {
       if (client) {
         try {
           const entityId = (runtimeId != null && runtimeId !== 0n && runtimeId !== '0') ? BigInt(runtimeId) : 1n;
+          const pos = this.getPosition ? this.getPosition() : { x: 0, y: 0, z: 0 };
+          const blockPos = {
+            x: Math.floor(pos.x),
+            y: Math.floor(pos.y),
+            z: Math.floor(pos.z),
+          };
           client.queue('player_action', {
             runtime_entity_id: entityId,
             action: 'stop_sneak',
-            position: { x: 0, y: 0, z: 0 },
-            result_position: { x: 0, y: 0, z: 0 },
+            position: blockPos,
+            result_position: blockPos,
             face: 0,
           });
           client.queue('player_input', {

@@ -127,7 +127,7 @@ async function runTests() {
   assert((crouchEngine as any).isCrouchLocked === true, 'Crouch lock must be active');
   const startSneakPacket = queuedPackets.find(p => p.name === 'player_action' && p.data.action === 'start_sneak');
   assert(startSneakPacket != null, 'Must send player_action start_sneak packet');
-  assert(startSneakPacket!.data.position.x === 0 && startSneakPacket!.data.position.y === 0 && startSneakPacket!.data.position.z === 0, 'position must be zero vector');
+  assert(startSneakPacket!.data.position.x === 50 && startSneakPacket!.data.position.y === 64 && startSneakPacket!.data.position.z === 50, 'position must match bot block position');
 
   // Verify that background/game attempts to uncrouch are BLOCKED when locked
   crouchEngine.setSneak(false);
@@ -140,7 +140,7 @@ async function runTests() {
   assert((crouchEngine as any).isCrouchLocked === false, 'Crouch lock must be cleared');
   const stopSneakPacket = queuedPackets.find(p => p.name === 'player_action' && p.data.action === 'stop_sneak');
   assert(stopSneakPacket != null, 'Must send player_action stop_sneak packet');
-  assert(stopSneakPacket!.data.position.x === 0 && stopSneakPacket!.data.position.y === 0 && stopSneakPacket!.data.position.z === 0, 'position must be zero vector');
+  assert(stopSneakPacket!.data.position.x === 50 && stopSneakPacket!.data.position.y === 64 && stopSneakPacket!.data.position.z === 50, 'position must match bot block position');
   assert((crouchEngine as any).stopSneakTicks > 0, 'stopSneakTicks must be active during uncrouch transition');
   console.log('✔ Crouch toggle ON / OFF with persistent lock validated.');
 

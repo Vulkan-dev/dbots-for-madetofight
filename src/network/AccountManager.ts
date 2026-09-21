@@ -7,6 +7,7 @@ import { TokenStorage } from '../auth/TokenStorage';
 import { logger } from '../utils/logger';
 import { NotificationService } from '../notify/NotificationService';
 import { LocationStorage } from '../storage/LocationStorage';
+import { PersistentActionStorage } from '../storage/PersistentActionStorage';
 import {
   getAccountsForNode,
   getAccountById,
@@ -107,6 +108,7 @@ export class AccountManager extends EventEmitter {
     const rows = await getAccountsForNode(this.appConfig.nodeId);
     logger.info(`Found ${rows.length} account(s) in Supabase for node '${this.appConfig.nodeId}'`);
     LocationStorage.populateFromSupabase(rows);
+    PersistentActionStorage.populateFromSupabase(rows);
 
     for (const row of rows) {
       AccountManager.registerBotName(row.id);

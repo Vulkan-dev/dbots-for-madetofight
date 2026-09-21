@@ -42,13 +42,18 @@ export class KeepAliveEngine {
     client: Client,
     accountId: string,
     initialPosition?: Vector3D,
-    getRuntimeEntityId?: () => bigint | string | number
+    getRuntimeEntityId?: () => bigint | string | number,
+    initialSneaking?: boolean
   ) {
     this.client = client;
     this.accountId = accountId;
     this.getRuntimeEntityId = getRuntimeEntityId || (() => 0n);
     if (initialPosition) {
       this.position = { ...initialPosition };
+    }
+    if (initialSneaking) {
+      this.isSneakingState = true;
+      this.isCrouchLocked = true;
     }
   }
 
@@ -230,11 +235,16 @@ export class KeepAliveEngine {
     try {
       const rid = this.getRuntimeEntityId ? this.getRuntimeEntityId() : 0n;
       const entityId = (rid != null && rid !== 0n && rid !== '0') ? BigInt(rid) : 1n;
+      const blockPos = {
+        x: Math.floor(this.position.x),
+        y: Math.floor(this.position.y),
+        z: Math.floor(this.position.z),
+      };
       this.client.queue('player_action', {
         runtime_entity_id: entityId,
         action: isSneaking ? 'start_sneak' : 'stop_sneak',
-        position: { x: 0, y: 0, z: 0 },
-        result_position: { x: 0, y: 0, z: 0 },
+        position: blockPos,
+        result_position: blockPos,
         face: 0,
       });
       this.client.queue('player_input', {
@@ -408,7 +418,7 @@ export class KeepAliveEngine {
 
   private static readonly ZERO_VEC2 = Object.freeze({ x: 0, z: 0 });
   private static readonly ZERO_VEC3 = Object.freeze({ x: 0, y: 0, z: 0 });
-  private static readonly DEFAULT_GROUND_INPUT = Object.freeze(['vertical_collision']);
+  private static readonly EMPTY_INPUT_FLAGS: Record<string, boolean> = Object.freeze({}) as Record<string, boolean>;
   private lastJumpingState: boolean = false;
   private lastSneakingState: boolean = false;
 
@@ -421,7 +431,7 @@ export class KeepAliveEngine {
     let deltaY = 0;
     let deltaX = 0;
     let deltaZ = 0;
-    let inputDataArray: string[] | null = null;
+    let inputDataObj: Record<string, boolean> = KeepAliveEngine.EMPTY_INPUT_FLAGS;
 
     const hasDynamicActions =
       !this.isGrounded ||
@@ -444,7 +454,6 @@ export class KeepAliveEngine {
 
     if (!hasDynamicActions) {
       // FAST PATH: Zero object/set allocations when standing on ground
-      inputDataArray = KeepAliveEngine.DEFAULT_GROUND_INPUT as unknown as string[];
       deltaY = 0;
     } else {
       // DYNAMIC PATH: Handle jumps, swings, sneak transitions, mid-air descent
@@ -452,7 +461,6 @@ export class KeepAliveEngine {
 
       // Mid-air descent logic if floating upon teleport / home arrival
       if (!this.isGrounded) {
-        currentFlags.delete('vertical_collision');
         this.floatingTicks++;
         if (this.targetFloorY != null) {
           const descentStep = 0.15;
@@ -466,7 +474,6 @@ export class KeepAliveEngine {
             this.isGrounded = true;
             this.targetFloorY = null;
             this.floatingTicks = 0;
-            currentFlags.add('vertical_collision');
           }
         } else {
           // If no target floor is specified, let gravity pull down naturally without freezing
@@ -476,12 +483,9 @@ export class KeepAliveEngine {
           if (this.floatingTicks > 60) {
             this.isGrounded = true;
             this.floatingTicks = 0;
-            currentFlags.add('vertical_collision');
           }
         }
       } else if (this.jumpTicksRemaining <= 0) {
-        // When standing on ground (not jumping), signal vertical_collision
-        currentFlags.add('vertical_collision');
         deltaY = 0;
       }
 
@@ -489,12 +493,10 @@ export class KeepAliveEngine {
       if (this.jumpTicksRemaining > 0) {
         currentFlags.add('jumping');
         currentFlags.add('jump_down');
-        currentFlags.add('jump_current_raw');
 
         // First tick of jump
         if (this.jumpTicksRemaining === 10) {
           currentFlags.add('start_jumping');
-          currentFlags.add('jump_pressed_raw');
         }
 
         const tick = 11 - this.jumpTicksRemaining; // 1 to 10
@@ -517,8 +519,6 @@ export class KeepAliveEngine {
         if (this.jumpTicksRemaining === 0) {
           this.position.y = this.jumpBaseY;
           deltaY = 0;
-          currentFlags.add('jump_released_raw');
-          currentFlags.add('vertical_collision');
           this.isGrounded = true;
           this.jumpCooldownTicks = 2; // 100ms pause on ground before next jump
         }
@@ -531,7 +531,6 @@ export class KeepAliveEngine {
 
       // Process queued horizontal movement
       if (this.moveTicksRemaining > 0) {
-        currentFlags.add('start_moving');
         this.position.x += this.moveStepX;
         this.position.z += this.moveStepZ;
         deltaX += this.moveStepX;
@@ -547,20 +546,24 @@ export class KeepAliveEngine {
 
       // Process Item Interaction / Block Action Queue
       if (this.itemUseTicksRemaining > 0) {
-        currentFlags.add('start_using_item');
-        currentFlags.add('perform_item_interaction');
-        currentFlags.add('perform_block_actions');
+        currentFlags.add('item_interact');
+        currentFlags.add('block_action');
         this.itemUseTicksRemaining--;
       }
 
-      // Process Sneak Input Flags (Geyser InputCache detection)
+      // Process Sneak Input Flags (Geyser & BDS InputCache detection)
       if (this.isSneakingState) {
         currentFlags.add('sneaking');
         currentFlags.add('sneak_down');
         currentFlags.add('change_height');
         currentFlags.add('persist_sneak');
+        currentFlags.add('sneak_toggle_down');
         if (!this.lastSneakingState) {
           currentFlags.add('start_sneaking');
+        }
+        // Periodically reinforce sneak packets every 20 ticks (1s) to guarantee crouch stance survives respawns, teleports, and lag spikes
+        if (this.ticksElapsed % 20 === 0) {
+          this.sendSneakPlayerAction(true);
         }
       } else if (this.stopSneakTicks > 0) {
         currentFlags.add('stop_sneaking');
@@ -568,7 +571,12 @@ export class KeepAliveEngine {
         this.stopSneakTicks--;
       }
 
-      inputDataArray = currentFlags.size > 0 ? Array.from(currentFlags) : null;
+      if (currentFlags.size > 0) {
+        inputDataObj = {};
+        for (const flag of currentFlags) {
+          inputDataObj[flag] = true;
+        }
+      }
     }
 
     try {
@@ -580,7 +588,7 @@ export class KeepAliveEngine {
         position: this.position,
         move_vector: (deltaX !== 0 || deltaZ !== 0) ? { x: 0, y: 1 } : KeepAliveEngine.ZERO_VEC2,
         head_yaw: this.headYaw,
-        input_data: inputDataArray,
+        input_data: inputDataObj,
         input_mode: 'mouse',
         play_mode: 'screen',
         interaction_model: 'crosshair',

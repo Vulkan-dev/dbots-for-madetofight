@@ -346,22 +346,44 @@ export async function exportAllBackupData(): Promise<{
   accounts: any[];
   nodes: any[];
   tokens: any[];
+  settings?: any[];
+  permissions?: any[];
+  ignoreList?: any[];
+  commands?: any[];
+  accountGroups?: any[];
 }> {
   const client = getSupabaseClient();
-  const [accRes, nodesRes, tokensRes] = await Promise.all([
+  const [accRes, nodesRes, tokensRes, settingsRes, permsRes, ignoreRes, cmdRes] = await Promise.all([
     client.from('accounts').select('*'),
     client.from('backend_nodes').select('*'),
     client.from('auth_tokens').select('*'),
+    client.from('node_settings').select('*'),
+    client.from('permissions').select('*'),
+    client.from('ignore_list').select('*'),
+    client.from('commands').select('*').eq('action', 'SET_ACCOUNT_GROUPS'),
   ]);
 
   if (accRes.error) logger.debug(`exportAllBackupData accounts error: ${accRes.error.message}`);
   if (nodesRes.error) logger.debug(`exportAllBackupData nodes error: ${nodesRes.error.message}`);
   if (tokensRes.error) logger.debug(`exportAllBackupData tokens error: ${tokensRes.error.message}`);
 
+  let accountGroups: any[] = [];
+  if (cmdRes.data && cmdRes.data.length > 0) {
+    const latest = cmdRes.data[cmdRes.data.length - 1];
+    if (Array.isArray(latest?.payload?.groups)) {
+      accountGroups = latest.payload.groups;
+    }
+  }
+
   return {
     accounts: accRes.data || [],
     nodes: nodesRes.data || [],
     tokens: tokensRes.data || [],
+    settings: settingsRes.data || [],
+    permissions: permsRes.data || [],
+    ignoreList: ignoreRes.data || [],
+    commands: cmdRes.data || [],
+    accountGroups,
   };
 }
 
@@ -369,15 +391,27 @@ export async function importAllBackupData(backup: {
   accounts?: any[];
   nodes?: any[];
   tokens?: any[];
+  settings?: any[];
+  permissions?: any[];
+  ignoreList?: any[];
+  commands?: any[];
+  accountGroups?: any[];
 }): Promise<{
   accountsCount: number;
   nodesCount: number;
   tokensCount: number;
+  settingsCount: number;
+  permissionsCount: number;
+  ignoreListCount: number;
 }> {
   const client = getSupabaseClient();
   const accounts = backup.accounts || [];
   const nodes = backup.nodes || [];
   const tokens = backup.tokens || [];
+  const settings = backup.settings || [];
+  const permissions = backup.permissions || [];
+  const ignoreList = backup.ignoreList || [];
+  const commands = backup.commands || [];
 
   // Clean wipe accounts and tokens first to prevent duplicate keys or leftover residue
   if (accounts.length > 0 || tokens.length > 0) {
@@ -408,15 +442,63 @@ export async function importAllBackupData(backup: {
       const cleanTok = { ...tok };
       delete cleanTok.created_at;
       cleanTok.updated_at = new Date().toISOString();
+      if (typeof cleanTok.token_data === 'object' && cleanTok.token_data !== null) {
+        cleanTok.token_data = JSON.stringify(cleanTok.token_data);
+      }
       const { error } = await client.from('auth_tokens').upsert(cleanTok, { onConflict: 'account_id' });
       if (error) logger.debug(`importAllBackupData token error [${tok.account_id}]: ${error.message}`);
     }
+  }
+
+  if (settings.length > 0) {
+    for (const s of settings) {
+      const clean = { ...s, updated_at: new Date().toISOString() };
+      await client.from('node_settings').upsert(clean, { onConflict: 'node_id' });
+    }
+  }
+
+  if (permissions.length > 0) {
+    for (const p of permissions) {
+      const clean = { ...p };
+      delete clean.created_at;
+      await client.from('permissions').upsert(clean, { onConflict: 'user_id' });
+    }
+  }
+
+  if (ignoreList.length > 0) {
+    for (const ig of ignoreList) {
+      const clean = { ...ig };
+      delete clean.created_at;
+      await client.from('ignore_list').upsert(clean, { onConflict: 'player_name' });
+    }
+  }
+
+  // Restore account groups command
+  if (commands.length > 0) {
+    for (const cmd of commands) {
+      const clean = { ...cmd };
+      delete clean.created_at;
+      await client.from('commands').upsert(clean, { onConflict: 'id' });
+    }
+  } else if (Array.isArray(backup.accountGroups) && backup.accountGroups.length > 0) {
+    try {
+      await client.from('commands').insert({
+        node_id: nodes[0]?.id || 'master-node',
+        account_id: null,
+        action: 'SET_ACCOUNT_GROUPS',
+        payload: { groups: backup.accountGroups, updatedAt: new Date().toISOString() },
+        status: 'DONE',
+      });
+    } catch {}
   }
 
   return {
     accountsCount: accounts.length,
     nodesCount: nodes.length,
     tokensCount: tokens.length,
+    settingsCount: settings.length,
+    permissionsCount: permissions.length,
+    ignoreListCount: ignoreList.length,
   };
 }
 
@@ -498,26 +580,31 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
 
   logger.info('Starting Dual Supabase Backup to Secondary Database...');
   const counts = { nodes: 0, accounts: 0, tokens: 0, settings: 0, permissions: 0, ignoreList: 0 };
+  const syncErrors: string[] = [];
 
   try {
     // 1. Nodes (backend_nodes)
     try {
       const { data: nodes, error: nErr } = await primary.from('backend_nodes').select('*');
+      if (nErr) syncErrors.push(`Primary nodes query: ${nErr.message}`);
       if (!nErr && nodes && nodes.length > 0) {
         for (const n of nodes) {
           const clean = { ...n };
           delete clean.created_at;
           const { error } = await secondary.from('backend_nodes').upsert(clean, { onConflict: 'id' });
           if (!error) counts.nodes++;
+          else syncErrors.push(`Secondary nodes upsert: ${error.message}`);
         }
       }
     } catch (err: any) {
       logger.debug(`Dual sync backend_nodes: ${err?.message}`);
+      syncErrors.push(`Nodes sync: ${err?.message}`);
     }
 
     // 2. Accounts
     try {
       const { data: accounts, error: aErr } = await primary.from('accounts').select('*');
+      if (aErr) syncErrors.push(`Primary accounts query: ${aErr.message}`);
       if (!aErr && accounts && accounts.length > 0) {
         for (const acc of accounts) {
           const clean = { ...acc };
@@ -525,27 +612,35 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
           clean.updated_at = new Date().toISOString();
           const { error } = await secondary.from('accounts').upsert(clean, { onConflict: 'id' });
           if (!error) counts.accounts++;
+          else syncErrors.push(`Secondary accounts upsert: ${error.message}`);
         }
       }
     } catch (err: any) {
       logger.debug(`Dual sync accounts: ${err?.message}`);
+      syncErrors.push(`Accounts sync: ${err?.message}`);
     }
 
-    // 3. Auth Tokens (excluding junk / corrupt tokens)
+    // 3. Auth Tokens (including objects, JSON strings, and tokens)
     try {
       const { data: tokens, error: tErr } = await primary.from('auth_tokens').select('*');
+      if (tErr) syncErrors.push(`Primary tokens query: ${tErr.message}`);
       if (!tErr && tokens && tokens.length > 0) {
         for (const tok of tokens) {
-          if (!tok.token_data || typeof tok.token_data !== 'string' || tok.token_data.length < 10) continue;
-          const clean = { ...tok };
+          const dataStr = typeof tok.token_data === 'object' && tok.token_data !== null
+            ? JSON.stringify(tok.token_data)
+            : String(tok.token_data || '');
+          if (dataStr.length < 5) continue;
+          const clean = { ...tok, token_data: dataStr };
           delete clean.created_at;
           clean.updated_at = new Date().toISOString();
           const { error } = await secondary.from('auth_tokens').upsert(clean, { onConflict: 'account_id' });
           if (!error) counts.tokens++;
+          else syncErrors.push(`Secondary tokens upsert: ${error.message}`);
         }
       }
     } catch (err: any) {
       logger.debug(`Dual sync auth_tokens: ${err?.message}`);
+      syncErrors.push(`Tokens sync: ${err?.message}`);
     }
 
     // 4. Node Settings
@@ -557,6 +652,7 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
           clean.updated_at = new Date().toISOString();
           const { error } = await secondary.from('node_settings').upsert(clean, { onConflict: 'node_id' });
           if (!error) counts.settings++;
+          else syncErrors.push(`Secondary settings upsert: ${error.message}`);
         }
       }
     } catch (err: any) {
@@ -572,6 +668,7 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
           delete clean.created_at;
           const { error } = await secondary.from('permissions').upsert(clean, { onConflict: 'user_id' });
           if (!error) counts.permissions++;
+          else syncErrors.push(`Secondary permissions upsert: ${error.message}`);
         }
       }
     } catch (err: any) {
@@ -587,10 +684,42 @@ export async function syncToSecondarySupabase(secondaryConfig?: { url: string; s
           delete clean.created_at;
           const { error } = await secondary.from('ignore_list').upsert(clean, { onConflict: 'player_name' });
           if (!error) counts.ignoreList++;
+          else syncErrors.push(`Secondary ignore_list upsert: ${error.message}`);
         }
       }
     } catch (err: any) {
       logger.debug(`Dual sync ignore_list: ${err?.message}`);
+    }
+
+    // 7. Account Groups (commands table action = 'SET_ACCOUNT_GROUPS')
+    try {
+      const { data: groupsCmds, error: gErr } = await primary.from('commands').select('*').eq('action', 'SET_ACCOUNT_GROUPS');
+      if (!gErr && groupsCmds && groupsCmds.length > 0) {
+        for (const gCmd of groupsCmds) {
+          const clean = { ...gCmd };
+          delete clean.created_at;
+          const { error } = await secondary.from('commands').upsert(clean, { onConflict: 'id' });
+          if (error) syncErrors.push(`Secondary commands upsert: ${error.message}`);
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Dual sync commands SET_ACCOUNT_GROUPS: ${err?.message}`);
+    }
+
+    const totalSynced = counts.accounts + counts.nodes + counts.tokens;
+    if (totalSynced === 0 && syncErrors.length > 0) {
+      const isMissingTables = syncErrors.some(e => e.includes('schema cache') || e.includes('relation') || e.includes('PGRST205'));
+      const errorMsg = isMissingTables
+        ? 'Secondary Supabase database tables are missing. Please run schema.sql in your Secondary Supabase SQL Editor!'
+        : syncErrors[0];
+      logger.warn(`Dual Supabase Backup incomplete: ${errorMsg}`);
+      _lastSecondarySyncStatus = {
+        timestamp: new Date().toISOString(),
+        success: false,
+        counts,
+        error: errorMsg,
+      };
+      return { success: false, counts, error: errorMsg };
     }
 
     logger.info(`Dual Supabase Backup completed: ${counts.accounts} accounts, ${counts.nodes} nodes, ${counts.tokens} tokens, ${counts.settings} settings synced to Secondary Supabase.`);
@@ -770,8 +899,11 @@ export async function loadFromSecondarySupabase(secondaryConfig?: { url: string;
       if (!tErr && tokens && tokens.length > 0) {
         loadedData.tokens = tokens;
         for (const tok of tokens) {
-          if (!tok.token_data || typeof tok.token_data !== 'string' || tok.token_data.length < 10) continue;
-          const clean = { ...tok };
+          const dataStr = typeof tok.token_data === 'object' && tok.token_data !== null
+            ? JSON.stringify(tok.token_data)
+            : String(tok.token_data || '');
+          if (dataStr.length < 5) continue;
+          const clean = { ...tok, token_data: dataStr };
           delete clean.created_at;
           clean.updated_at = new Date().toISOString();
           const { error } = await primary.from('auth_tokens').upsert(clean, { onConflict: 'account_id' });
@@ -828,6 +960,20 @@ export async function loadFromSecondarySupabase(secondaryConfig?: { url: string;
       }
     } catch (err: any) {
       logger.debug(`Load from secondary ignore_list: ${err?.message}`);
+    }
+
+    // 7. Account Groups (commands table)
+    try {
+      const { data: groupsCmds, error: gErr } = await secondary.from('commands').select('*').eq('action', 'SET_ACCOUNT_GROUPS');
+      if (!gErr && groupsCmds && groupsCmds.length > 0) {
+        for (const gCmd of groupsCmds) {
+          const clean = { ...gCmd };
+          delete clean.created_at;
+          await primary.from('commands').upsert(clean, { onConflict: 'id' });
+        }
+      }
+    } catch (err: any) {
+      logger.debug(`Load from secondary commands SET_ACCOUNT_GROUPS: ${err?.message}`);
     }
 
     logger.info(`Load Backup from Secondary Supabase completed: Restored ${counts.accounts} accounts, ${counts.nodes} nodes, ${counts.tokens} tokens, ${counts.settings} settings into Primary Supabase.`);

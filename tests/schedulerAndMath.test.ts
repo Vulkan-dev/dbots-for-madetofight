@@ -3,6 +3,7 @@ import { JoinScheduler } from '../src/network/JoinScheduler';
 import { PlayerMonitor } from '../src/features/PlayerMonitor';
 import { NotificationService } from '../src/notify/NotificationService';
 import { ActionController } from '../src/features/ActionController';
+import { PersistentActionStorage } from '../src/storage/PersistentActionStorage';
 import { AutoRespawn } from '../src/features/AutoRespawn';
 import { Watchdog } from '../src/network/Watchdog';
 import { PlayerHitResponse } from '../src/features/PlayerHitResponse';
@@ -294,6 +295,7 @@ async function runTests() {
   console.log('✔ Bedrock 1.26.45 player_auth_input with dynamic action flags test passed.');
 
   // 9. Test ActionController state management and toggles
+  PersistentActionStorage.setCrouch('testBot', false);
   const queuedPackets: { name: string; params: any }[] = [];
   const mockClient: any = {
     queue: (name: string, params: any) => {

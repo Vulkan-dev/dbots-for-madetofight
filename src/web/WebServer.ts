@@ -457,9 +457,18 @@ export class WebServer {
         await TokenStorage.clearAllTokens();
 
         // 1. Overwrite database records in Supabase
-        let dbResult = { accountsCount: 0, nodesCount: 0, tokensCount: 0 };
+        let dbResult: any = { accountsCount: 0, nodesCount: 0, tokensCount: 0 };
         try {
-          dbResult = await importAllBackupData({ accounts, nodes, tokens });
+          dbResult = await importAllBackupData({
+            accounts,
+            nodes,
+            tokens,
+            settings: data.settings,
+            permissions: data.permissions,
+            ignoreList: data.ignoreList,
+            commands: data.commands,
+            accountGroups: data.accountGroups,
+          });
         } catch (dbErr: any) {
           logger.warn(`Supabase importAllBackupData notice: ${dbErr?.message}`);
         }
