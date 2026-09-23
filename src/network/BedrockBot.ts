@@ -65,6 +65,8 @@ export class BedrockBot extends EventEmitter {
   public watchdog: Watchdog;
   private lastTpacceptTime: number = 0;
   private lastTpacceptPlayer: string = '';
+  private lastTpdenyTime: number = 0;
+  private lastTpdenyPlayer: string = '';
   public notificationService: NotificationService;
   public keepAliveEngine: KeepAliveEngine | null = null;
   public actionController: ActionController;
@@ -1310,12 +1312,12 @@ export class BedrockBot extends EventEmitter {
       if (!requestingPlayer && (parsedCleanText.toLowerCase().includes('/tpaccept') || parsedCleanText.toLowerCase().includes('/tpahere') || parsedCleanText.toLowerCase().includes('teleport'))) {
         for (const p of params) {
           const strippedP = String(p).replace(/§[0-9a-fk-or]/gi, '').replace(/&[0-9a-fk-or]/gi, '').trim();
-          if (/^[a-zA-Z0-9_.*]{3,20}$/.test(strippedP) && strippedP.toLowerCase() !== 'server') {
+          if (/^[a-zA-Z0-9_.*]{3,20}$/.test(strippedP) && !['server', 'system', 'console', 'broadcast'].includes(strippedP.toLowerCase())) {
             requestingPlayer = strippedP;
             break;
           }
         }
-        if (!requestingPlayer && packet.source_name && /^[a-zA-Z0-9_.*]{3,20}$/.test(packet.source_name) && packet.source_name.toLowerCase() !== 'server') {
+        if (!requestingPlayer && packet.source_name && /^[a-zA-Z0-9_.*]{3,20}$/.test(packet.source_name) && !['server', 'system', 'console', 'broadcast'].includes(packet.source_name.toLowerCase())) {
           requestingPlayer = packet.source_name;
         }
       }
@@ -1323,6 +1325,11 @@ export class BedrockBot extends EventEmitter {
       if (!requestingPlayer) return;
 
       let cleanPlayer = requestingPlayer.trim().replace(/[.,:;!?]+$/, '').trim();
+      const SYSTEM_NAMES = ['server', 'system', 'console', 'broadcast', 'to', 'type', 'accept', 'here', 'the', 'deny'];
+      if (SYSTEM_NAMES.includes(cleanPlayer.toLowerCase())) {
+        return;
+      }
+
       let isTrusted = IgnoreListStorage.isIgnored(cleanPlayer);
       let isBot = false;
       let AccountManagerMod: any = null;
@@ -1344,13 +1351,23 @@ export class BedrockBot extends EventEmitter {
         }
       }
 
+      const now = Date.now();
+
+      // If sender is NOT trusted and NOT a recognized bot:
+      // Auto-deny the request immediately via /tpdeny <player> so it doesn't linger in the server queue!
       if (!isTrusted && !isBot) {
-        logger.debug(`Ignored teleport request from untrusted player: '${cleanPlayer}'`, this.accountId);
+        if (now - this.lastTpdenyTime < 2000 && this.lastTpdenyPlayer.toLowerCase() === cleanPlayer.toLowerCase()) {
+          return;
+        }
+        this.lastTpdenyTime = now;
+        this.lastTpdenyPlayer = cleanPlayer;
+
+        logger.info(`[AUTO-TPDENY] Auto-denying teleport request (TPA/TPAHERE) from untrusted player: '${cleanPlayer}' via /tpdeny`, this.accountId);
+        this.sendChat(`/tpdeny ${cleanPlayer}`);
         return;
       }
 
-      // Debounce duplicate requests within 2 seconds
-      const now = Date.now();
+      // Debounce duplicate requests from trusted players within 2 seconds
       if (now - this.lastTpacceptTime < 2000 && this.lastTpacceptPlayer.toLowerCase() === cleanPlayer.toLowerCase()) {
         return;
       }
@@ -1359,16 +1376,10 @@ export class BedrockBot extends EventEmitter {
 
       logger.info(`[AUTO-TPACCEPT] Auto-accepting teleport request (TPA/TPAHERE) from trusted player: '${cleanPlayer}' via /tpaccept`, this.accountId);
 
-      // Execute in-game commands: /tpaccept <player>, fallback /tpaccept
+      // Execute targeted in-game command: /tpaccept <player> ONLY.
+      // NEVER send a secondary bare '/tpaccept', as that would accept whatever pending request
+      // (such as an untrusted player's tpahere) is lingering in the server's queue.
       this.sendChat(`/tpaccept ${cleanPlayer}`);
-
-      setTimeout(() => {
-        try {
-          if (this.client && this.state === ConnectionState.CONNECTED) {
-            this.sendChat('/tpaccept');
-          }
-        } catch {}
-      }, 300);
     } catch (err: any) {
       logger.debug(`Error handling teleport request: ${err?.message}`, this.accountId);
     }

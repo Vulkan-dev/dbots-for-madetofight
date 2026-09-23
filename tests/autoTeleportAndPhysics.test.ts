@@ -2,6 +2,7 @@ import { KeepAliveEngine } from '../src/network/KeepAliveEngine';
 import { IgnoreListStorage } from '../src/storage/IgnoreListStorage';
 import { AccountManager } from '../src/network/AccountManager';
 import { AFKSpotTracker } from '../src/features/AFKSpotTracker';
+import { BedrockBot } from '../src/network/BedrockBot';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -111,6 +112,39 @@ async function runTests() {
     assert(isAccepted === tc.allowed, `Expected allowed=${tc.allowed} for player ${extractedPlayer}, got ${isAccepted}`);
   }
   console.log('✔ Auto-tpaccept and auto-tpahere pattern matching and whitelist validation passed.');
+
+  // ── 3b. Verify BedrockBot handleTeleportRequest command execution (Targeted Accept & Untrusted Deny) ───
+  const sentBotCommands: string[] = [];
+  const mockBotInstance: any = {
+    accountId: 'test-tp-bot',
+    lastTpacceptTime: 0,
+    lastTpacceptPlayer: '',
+    lastTpdenyTime: 0,
+    lastTpdenyPlayer: '',
+    client: { queue: () => {} },
+    state: 1, // ConnectionState.CONNECTED
+    sendChat: (msg: string) => {
+      sentBotCommands.push(msg);
+    },
+    handleTeleportRequest: BedrockBot.prototype.handleTeleportRequest,
+  };
+
+  // Test trusted player tpa
+  sentBotCommands.length = 0;
+  mockBotInstance.handleTeleportRequest({ message: '§r§fTrustedFriend sent you a teleport request', parameters: [] });
+  assert(sentBotCommands.length === 1, `Expected exactly 1 command sent, got: ${JSON.stringify(sentBotCommands)}`);
+  assert(sentBotCommands[0] === '/tpaccept TrustedFriend', `Expected '/tpaccept TrustedFriend', got: ${sentBotCommands[0]}`);
+
+  // Test system helper line ignored (no bare /tpaccept, no commands sent)
+  mockBotInstance.handleTeleportRequest({ message: '§r§7Type /tpaccept to accept', parameters: [] });
+  assert(sentBotCommands.length === 1, `System line must not trigger extra command, got: ${JSON.stringify(sentBotCommands)}`);
+
+  // Test untrusted player tpahere -> MUST auto-deny via /tpdeny <player>
+  sentBotCommands.length = 0;
+  mockBotInstance.handleTeleportRequest({ message: '§r§fRandomGriefer sent you a teleport here request', parameters: [] });
+  assert(sentBotCommands.length === 1, `Expected exactly 1 command sent, got: ${JSON.stringify(sentBotCommands)}`);
+  assert(sentBotCommands[0] === '/tpdeny RandomGriefer', `Expected '/tpdeny RandomGriefer', got: ${sentBotCommands[0]}`);
+  console.log('✔ Auto-tpdeny for untrusted players and targeted /tpaccept for trusted players passed.');
 
   // ── 4. Crouch Toggle (Always Crouch / Uncrouch) ──────────────────────────────
   const queuedPackets: Array<{ name: string; data: any }> = [];
