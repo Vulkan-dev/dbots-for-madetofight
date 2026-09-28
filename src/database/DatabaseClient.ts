@@ -174,7 +174,10 @@ export async function getAllNodes(): Promise<any[]> {
 // ─── Accounts ───────────────────────────────────────────────────────────────────
 export async function getAccountsForNode(nodeId: string): Promise<any[]> {
   const pool = getDbPool();
-  const res = await pool.query(`SELECT * FROM accounts WHERE node_id = $1`, [nodeId]);
+  const res = await pool.query(
+    `SELECT * FROM accounts WHERE node_id = $1 OR node_id = 'node-1' OR node_id IS NULL OR node_id = '' OR $1 = 'node-1' ORDER BY id ASC`,
+    [nodeId]
+  );
   return res.rows || [];
 }
 

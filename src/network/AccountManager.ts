@@ -10,6 +10,7 @@ import { LocationStorage } from '../storage/LocationStorage';
 import { PersistentActionStorage } from '../storage/PersistentActionStorage';
 import {
   getAccountsForNode,
+  getAllAccounts,
   getAccountById,
   upsertAccount,
   updateAccountFields,
@@ -105,8 +106,11 @@ export class AccountManager extends EventEmitter {
    * Loads accounts assigned to this node from Supabase and instantiates bots.
    */
   public async loadAccountsFromSupabase(): Promise<void> {
-    const rows = await getAccountsForNode(this.appConfig.nodeId);
-    logger.info(`Found ${rows.length} account(s) in Supabase for node '${this.appConfig.nodeId}'`);
+    let rows = await getAccountsForNode(this.appConfig.nodeId);
+    if (!rows || rows.length === 0) {
+      rows = await getAllAccounts();
+    }
+    logger.info(`Found ${rows.length} account(s) in Railway PostgreSQL for node '${this.appConfig.nodeId}'`);
     LocationStorage.populateFromSupabase(rows);
     PersistentActionStorage.populateFromSupabase(rows);
 

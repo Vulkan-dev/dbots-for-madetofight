@@ -138,7 +138,7 @@ let _config: AppConfig | null = null;
 export function loadConfig(): AppConfig {
   if (_config) return _config;
 
-  const nodeId = optionalEnv('NODE_ID', `node-${require('os').hostname()}`);
+  const nodeId = optionalEnv('NODE_ID', 'node-1');
 
   _config = {
     nodeId,
