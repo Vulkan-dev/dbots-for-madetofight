@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DonutSMP | Bedrock Console Authentication</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="style.css">
+
+  <script>
+    (function() {
+      try {
+        var raw = sessionStorage.getItem('donut_session') || localStorage.getItem('donut_session');
+        if (raw) {
+          var s = JSON.parse(raw);
+          if (s && s.token && s.exp && Date.now() < s.exp) {
+            window.location.replace('index.html');
+            return;
+          }
+        }
+        // If not authenticated, wipe any leftover session data (like allNodes)
+        sessionStorage.clear();
+      } catch(e) {}
+    })();
+  </script>
+
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: radial-gradient(circle at 50% 20%, #161619 0%, #09090b 80%);
+      padding: 20px;
+    }
+
+    .auth-container {
+      width: 100%;
+      max-width: 420px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 32px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
+      position: relative;
+    }
+
+    .auth-header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .auth-symbol {
+      width: 50px;
+      height: 50px;
+      margin: 0 auto 16px;
+      background: var(--bg-panel-elevated);
+      border: 1px solid var(--border-muted);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+    }
+
+    .auth-symbol svg {
+      width: 26px;
+      height: 26px;
+    }
+
+    .auth-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .auth-subtitle {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .auth-form {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .form-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .input-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .auth-input {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      padding: 10px 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .auth-input.has-toggle {
+      padding-right: 40px;
+    }
+
+    .auth-input:focus {
+      border-color: var(--border-focus);
+      background: var(--bg-input-hover);
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.05);
+    }
+
+    .toggle-pass-btn {
+      position: absolute;
+      right: 10px;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px;
+      border-radius: 4px;
+      transition: color 0.15s;
+    }
+
+    .toggle-pass-btn:hover {
+      color: var(--text-primary);
+    }
+
+    .auth-remember {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      user-select: none;
+      margin-top: -4px;
+    }
+
+    .auth-remember input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: #fff;
+      width: 15px;
+      height: 15px;
+    }
+
+    .btn-login {
+      width: 100%;
+      padding: 11px;
+      background: #ffffff;
+      color: #000000;
+      font-weight: 600;
+      font-size: 0.86rem;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .btn-login:hover {
+      background: #e4e4e7;
+      box-shadow: 0 4px 12px rgba(255, 255, 255, 0.15);
+    }
+
+    .btn-login:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .auth-error {
+      display: none;
+      padding: 10px 14px;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-radius: var(--radius-sm);
+      color: var(--status-error);
+      font-size: 0.78rem;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    .auth-error.visible {
+      display: block;
+      animation: shake 0.3s ease;
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      20%, 60% { transform: translateX(-5px); }
+      40%, 80% { transform: translateX(5px); }
+    }
+
+    .auth-footer {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-container">
+    <div class="auth-header">
+      <div class="auth-symbol">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </div>
+      <h1 class="auth-title">DONUT SMP</h1>
+      <p class="auth-subtitle">Console Access & Security Verification</p>
+    </div>
+
+    <form class="auth-form" id="loginForm" autocomplete="off">
+      <div class="auth-error" id="authErrorMsg"></div>
+
+      <div class="form-group">
+        <label class="form-label" for="loginIdentifier">Access Identifier / ID</label>
+        <div class="input-wrapper">
+          <input type="text" id="loginIdentifier" class="auth-input" placeholder="Enter identifier" required autofocus spellcheck="false" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="loginPass">Security Key / Password</label>
+        <div class="input-wrapper">
+          <input type="password" id="loginPass" class="auth-input has-toggle" placeholder="••••••••••••••••" required spellcheck="false" />
+          <button type="button" class="toggle-pass-btn" id="togglePassBtn" title="Show/Hide Password" tabindex="-1">
+            <svg id="eyeIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <label class="auth-remember">
+        <input type="checkbox" id="rememberMe" />
+        <span>Keep session active on this device</span>
+      </label>
+
+      <button type="submit" class="btn-login" id="loginBtn">
+        <span>Authenticate Access</span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      PROTECTED CONSOLE &bull; ZERO PLAIN-TEXT VERIFICATION
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var cfg = (typeof AUTH_CONFIG !== 'undefined') ? AUTH_CONFIG : {
+        SALT: 'donut_smp_salt_9981247',
+        TARGET_HASH: [
+          '7482245bd8bb63be08a2847db7e1e02d9155b2c63eb066a4c51d3590aabdfcce',
+          '43e0d28b93cada24e7b863eaba41e22cb731c6578a8e9d8e54bba1df741a37c4',
+          '17bfa52433bc77c82cc3ff8708b5861689f27f01df54046f8b2410f8e372ebca'
+        ],
+        SESSION_HOURS: 24,
+        REMEMBER_DAYS: 7
+      };
+
+      async function computeHash(val) {
+        var enc = new TextEncoder();
+        var data = enc.encode(val);
+        var hashBuffer = await crypto.subtle.digest('SHA-256', data);
+        var hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+      }
+
+      var form = document.getElementById('loginForm');
+      var idInput = document.getElementById('loginIdentifier');
+      var passInput = document.getElementById('loginPass');
+      var rememberInput = document.getElementById('rememberMe');
+      var errorMsg = document.getElementById('authErrorMsg');
+      var loginBtn = document.getElementById('loginBtn');
+
+      function showError(text) {
+        errorMsg.textContent = text;
+        errorMsg.classList.remove('visible');
+        void errorMsg.offsetWidth;
+        errorMsg.classList.add('visible');
+      }
+
+      // Toggle password visibility
+      var togglePassBtn = document.getElementById('togglePassBtn');
+      var eyeIcon = document.getElementById('eyeIcon');
+      if (togglePassBtn) {
+        togglePassBtn.addEventListener('click', function() {
+          if (passInput.type === 'password') {
+            passInput.type = 'text';
+            eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>';
+          } else {
+            passInput.type = 'password';
+            eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>';
+          }
+        });
+      }
+
+      form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        errorMsg.classList.remove('visible');
+
+        var rawId = (idInput.value || '').trim();
+        var normId = rawId.toLowerCase();
+        var rawPass = passInput.value || '';
+        var trimPass = rawPass.trim();
+
+        if (!rawId || !rawPass) {
+          showError('Identifier and password required.');
+          return;
+        }
+
+        loginBtn.disabled = true;
+        loginBtn.firstElementChild.textContent = 'Verifying...';
+
+        try {
+          // Check combinations to eliminate accidental whitespace or casing issues:
+          // 1. normId + ':' + rawPass
+          // 2. normId + ':' + trimPass
+          // 3. rawId + ':' + rawPass
+          // 4. rawId + ':' + trimPass
+          // 5. rawPass (if salt-only password configured)
+          var candidates = [
+            normId + ':' + rawPass + ':' + cfg.SALT,
+            normId + ':' + trimPass + ':' + cfg.SALT,
+            rawId + ':' + rawPass + ':' + cfg.SALT,
+            rawId + ':' + trimPass + ':' + cfg.SALT,
+            rawPass + ':' + cfg.SALT,
+            trimPass + ':' + cfg.SALT
+          ];
+
+          var allowedHashes = Array.isArray(cfg.TARGET_HASH) ? cfg.TARGET_HASH : [cfg.TARGET_HASH];
+          if (cfg.TARGET_HASHES && Array.isArray(cfg.TARGET_HASHES)) {
+            allowedHashes = allowedHashes.concat(cfg.TARGET_HASHES);
+          }
+
+          var isAuthenticated = false;
+          for (var i = 0; i < candidates.length; i++) {
+            var h = await computeHash(candidates[i]);
+            if (allowedHashes.indexOf(h) !== -1) {
+              isAuthenticated = true;
+              break;
+            }
+          }
+
+          if (isAuthenticated) {
+            var tokenBytes = new Uint8Array(24);
+            crypto.getRandomValues(tokenBytes);
+            var sessionToken = Array.from(tokenBytes).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
+            
+            var durationMs = rememberInput.checked 
+              ? ((cfg.REMEMBER_DAYS || 7) * 24 * 60 * 60 * 1000) 
+              : ((cfg.SESSION_HOURS || 24) * 60 * 60 * 1000);
+            var sessionData = {
+              token: sessionToken,
+              exp: Date.now() + durationMs
+            };
+
+            var serialized = JSON.stringify(sessionData);
+            if (rememberInput.checked) {
+              localStorage.setItem('donut_session', serialized);
+              sessionStorage.removeItem('donut_session');
+            } else {
+              sessionStorage.setItem('donut_session', serialized);
+              localStorage.removeItem('donut_session');
+            }
+
+            window.location.replace('index.html');
+          } else {
+            showError('Invalid identifier or security key. Please check your credentials.');
+            passInput.value = '';
+            passInput.focus();
+          }
+        } catch (err) {
+          console.error(err);
+          showError('Authentication error occurred.');
+        } finally {
+          loginBtn.disabled = false;
+          loginBtn.firstElementChild.textContent = 'Authenticate Access';
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

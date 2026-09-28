@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DonutSMP | Live Logs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+
+  <style id="authGate">body { display: none !important; }</style>
+  <script>
+    (function() {
+      try {
+        var raw = sessionStorage.getItem('donut_session') || localStorage.getItem('donut_session');
+        if (!raw) { window.location.replace('login.html'); return; }
+        var s = JSON.parse(raw);
+        if (!s || !s.token || !s.exp || Date.now() > s.exp) {
+          sessionStorage.removeItem('donut_session');
+          localStorage.removeItem('donut_session');
+          window.location.replace('login.html');
+          return;
+        }
+        document.getElementById('authGate')?.remove();
+      } catch(e) {
+        window.location.replace('login.html');
+      }
+    })();
+  </script>
+
+  <style>
+    body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    .logs-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 24px; background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-subtle); flex-shrink: 0;
+    }
+    .logs-header-left { display: flex; align-items: center; gap: 16px; }
+    .logs-header-left .brand-name { font-size: 0.9rem; }
+
+    .nav-links { display: flex; gap: 4px; }
+    .nav-links a {
+      padding: 6px 14px; border-radius: var(--radius-sm);
+      color: var(--text-muted); text-decoration: none; font-size: 0.78rem;
+      font-weight: 500; transition: all 0.15s;
+    }
+    .nav-links a:hover { color: var(--text-primary); background: var(--bg-btn-secondary); }
+    .nav-links a.active { color: var(--text-primary); background: var(--bg-panel-elevated); }
+
+    .logs-controls { display: flex; align-items: center; gap: 12px; }
+    .logs-controls .status-indicator {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.75rem; color: var(--text-muted);
+    }
+    .logs-controls .status-indicator .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--status-error); transition: background 0.3s;
+    }
+    .logs-controls .status-indicator .dot.connected { background: var(--status-online); }
+
+    .btn-clear {
+      padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);
+      background: var(--bg-btn-secondary); color: var(--text-muted); cursor: pointer;
+      font-size: 0.75rem; font-family: var(--font-sans); font-weight: 500;
+    }
+    .btn-clear:hover { color: var(--text-primary); border-color: var(--border-muted); }
+
+    .terminal-wrap {
+      flex: 1; overflow: hidden; display: flex; flex-direction: column;
+      background: #0a0a0c;
+    }
+    .terminal-toolbar {
+      display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+      background: var(--bg-panel); border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+    .terminal-toolbar .filter-group { display: flex; gap: 4px; }
+    .filter-btn {
+      padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border-subtle);
+      background: transparent; color: var(--text-dim); cursor: pointer;
+      font-size: 0.7rem; font-family: var(--font-mono); font-weight: 500;
+      transition: all 0.15s;
+    }
+    .filter-btn.active { border-color: var(--border-muted); color: var(--text-primary); background: var(--bg-panel-elevated); }
+    .filter-btn:hover { color: var(--text-muted); }
+
+    .log-search {
+      flex: 1; max-width: 280px; padding: 4px 10px; border-radius: 4px;
+      border: 1px solid var(--border-subtle); background: var(--bg-input);
+      color: var(--text-body); font-size: 0.75rem; font-family: var(--font-mono);
+      outline: none;
+    }
+    .log-search:focus { border-color: var(--border-focus); }
+    .log-search::placeholder { color: var(--text-dim); }
+
+    .log-count {
+      font-size: 0.7rem; color: var(--text-dim); font-family: var(--font-mono);
+      margin-left: auto;
+    }
+
+    #logTerminal {
+      flex: 1; overflow-y: auto; padding: 12px 16px;
+      font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.7;
+      color: var(--text-body); white-space: pre-wrap; word-break: break-all;
+      scrollbar-width: thin; scrollbar-color: #2a2a30 transparent;
+    }
+    #logTerminal::-webkit-scrollbar { width: 6px; }
+    #logTerminal::-webkit-scrollbar-track { background: transparent; }
+    #logTerminal::-webkit-scrollbar-thumb { background: #2a2a30; border-radius: 3px; }
+
+    .log-line { padding: 1px 0; }
+    .log-line:hover { background: rgba(255,255,255,0.02); }
+    .log-line .ts { color: var(--text-dim); }
+    .log-line.level-INFO .tag { color: #60a5fa; }
+    .log-line.level-WARN .tag { color: #facc15; }
+    .log-line.level-ERROR .tag { color: #f87171; }
+    .log-line.level-DEBUG .tag { color: #a78bfa; }
+    .log-line.level-WARN { color: #fde68a; }
+    .log-line.level-ERROR { color: #fca5a5; background: rgba(239,68,68,0.05); }
+    .log-line.level-DEBUG { color: #c4b5fd; }
+    .log-line.search-match { background: rgba(250,204,21,0.08); }
+
+    .empty-terminal {
+      display: flex; align-items: center; justify-content: center;
+      height: 100%; color: var(--text-dim); font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="logs-header">
+    <div class="logs-header-left">
+      <div class="brand">
+        <div class="brand-symbol">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+        </div>
+        <div class="brand-meta">
+          <span class="brand-name">DONUT SMP</span>
+        </div>
+      </div>
+      <nav class="nav-links">
+        <a href="index.html">Dashboard</a>
+        <a href="logs.html" class="active">Logs</a>
+        <a href="javascript:void(0)" onclick="logout()" style="color: var(--status-error); margin-left: 8px;">Logout</a>
+      </nav>
+    </div>
+    <div class="logs-controls">
+      <div class="node-selector-wrap" style="display:flex;align-items:center;gap:6px;">
+        <label for="logNodeSelect" style="font-size:0.75rem;color:var(--text-muted);font-weight:600;">NODE:</label>
+        <select id="logNodeSelect" onchange="onLogNodeChange()" style="padding:4px 8px;border-radius:4px;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-subtle);font-size:0.75rem;font-family:var(--font-mono);outline:none;cursor:pointer;">
+          <option value="all">🌐 All Nodes (Combined)</option>
+        </select>
+      </div>
+      <div class="status-indicator">
+        <span class="dot" id="streamDot"></span>
+        <span id="streamStatus">Disconnected</span>
+      </div>
+      <button class="btn-clear" onclick="clearLogs()">Clear</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:0.75rem;color:var(--text-muted);cursor:pointer;">
+        <input type="checkbox" id="autoScroll" checked style="accent-color:#60a5fa;"> Auto-scroll
+      </label>
+    </div>
+  </div>
+
+  <div class="terminal-wrap">
+    <div class="terminal-toolbar">
+      <div class="filter-group">
+        <button class="filter-btn active" data-level="all" onclick="setFilter('all',this)">ALL</button>
+        <button class="filter-btn" data-level="INFO" onclick="setFilter('INFO',this)">INFO</button>
+        <button class="filter-btn" data-level="WARN" onclick="setFilter('WARN',this)">WARN</button>
+        <button class="filter-btn" data-level="ERROR" onclick="setFilter('ERROR',this)">ERROR</button>
+        <button class="filter-btn" data-level="DEBUG" onclick="setFilter('DEBUG',this)">DEBUG</button>
+      </div>
+      <input type="text" class="log-search" id="logSearch" placeholder="Search logs..." oninput="applySearch()">
+      <span class="log-count" id="logCount">0 lines</span>
+    </div>
+    <div id="logTerminal">
+      <div class="empty-terminal" id="emptyMsg">Waiting for logs...</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script>
+    const terminal = document.getElementById('logTerminal');
+    const emptyMsg = document.getElementById('emptyMsg');
+    const logCountEl = document.getElementById('logCount');
+    const streamDot = document.getElementById('streamDot');
+    const streamStatus = document.getElementById('streamStatus');
+    const autoScrollCheck = document.getElementById('autoScroll');
+    const searchInput = document.getElementById('logSearch');
+
+    let allEntries = [];
+    let activeFilter = 'all';
+    let searchQuery = '';
+    let allNodes = [];
+    let activeEventSources = [];
+    let currentSelectedNodeId = 'all';
+
+    async function loadLogNodes() {
+      try {
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const { data } = await supabase.from('backend_nodes').select('*').order('created_at', { ascending: true });
+        if (data && data.length > 0) {
+          allNodes = data;
+          renderNodeDropdown();
+        }
+      } catch (e) {
+        console.error('Failed to load nodes in logs:', e);
+      }
+    }
+
+    function renderNodeDropdown() {
+      const select = document.getElementById('logNodeSelect');
+      if (!select) return;
+      let html = '<option value="all">🌐 All Nodes (Combined)</option>';
+      allNodes.forEach((n, idx) => {
+        const statusEmoji = n.status === 'online' ? '🟢' : '🔴';
+        html += `<option value="${n.id}">#${idx + 1} — ${n.name || n.id} [${n.status || 'unknown'}] ${statusEmoji}</option>`;
+      });
+      select.innerHTML = html;
+      select.value = currentSelectedNodeId;
+    }
+
+    async function onLogNodeChange() {
+      const select = document.getElementById('logNodeSelect');
+      currentSelectedNodeId = select.value;
+      clearLogs();
+      closeAllStreams();
+      await loadLogsForSelection();
+    }
+
+    function closeAllStreams() {
+      activeEventSources.forEach(es => {
+        try { es.close(); } catch {}
+      });
+      activeEventSources = [];
+      streamDot.classList.remove('connected');
+      streamStatus.textContent = 'Disconnected';
+    }
+
+    function renderEntry(entry) {
+      const div = document.createElement('div');
+      div.className = `log-line level-${entry.level}`;
+      const ts = entry.timestamp ? entry.timestamp.replace('T', ' ').replace('Z', '') : '';
+      const tag = entry.tag || 'SYSTEM';
+      const nodeBadge = entry.nodeTag ? `<span style="color:#a78bfa; font-weight:600;">[${escapeHtml(entry.nodeTag)}]</span> ` : '';
+      div.innerHTML = `${nodeBadge}<span class="ts">${ts}</span> [${entry.level}] <span class="tag">[${tag}]</span> ${escapeHtml(entry.message || '')}`;
+      return div;
+    }
+
+    function escapeHtml(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function shouldShow(entry) {
+      if (activeFilter !== 'all' && entry.level !== activeFilter) return false;
+      const fullText = (entry.raw || `${entry.message || ''} ${entry.nodeTag || ''} ${entry.tag || ''}`).toLowerCase();
+      if (searchQuery && !fullText.includes(searchQuery)) return false;
+      return true;
+    }
+
+    function renderAll() {
+      terminal.innerHTML = '';
+      let count = 0;
+      for (const entry of allEntries) {
+        if (!shouldShow(entry)) continue;
+        terminal.appendChild(renderEntry(entry));
+        count++;
+      }
+      logCountEl.textContent = `${count} lines`;
+      emptyMsg.style.display = allEntries.length === 0 ? 'flex' : 'none';
+      if (autoScrollCheck.checked) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function appendEntry(entry) {
+      allEntries.push(entry);
+      if (allEntries.length > 600) allEntries.shift();
+      if (!shouldShow(entry)) {
+        logCountEl.textContent = `${allEntries.length} lines`;
+        return;
+      }
+      emptyMsg.style.display = 'none';
+      terminal.appendChild(renderEntry(entry));
+
+      // Cap DOM elements at 400
+      while (terminal.children.length > 400) {
+        terminal.removeChild(terminal.firstChild);
+      }
+      logCountEl.textContent = `${terminal.children.length} lines`;
+      if (autoScrollCheck.checked) terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function setFilter(level, btn) {
+      activeFilter = level;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderAll();
+    }
+
+    function applySearch() {
+      searchQuery = searchInput.value.trim().toLowerCase();
+      renderAll();
+    }
+
+    function clearLogs() {
+      allEntries = [];
+      terminal.innerHTML = '';
+      terminal.appendChild(emptyMsg);
+      emptyMsg.style.display = 'flex';
+      logCountEl.textContent = '0 lines';
+    }
+
+    async function loadLogsForSelection() {
+      let targetNodes = [];
+      if (currentSelectedNodeId === 'all') {
+        targetNodes = allNodes.filter(n => n.url);
+      } else {
+        const matched = allNodes.find(n => n.id === currentSelectedNodeId);
+        if (matched && matched.url) targetNodes = [matched];
+      }
+
+      if (targetNodes.length === 0) {
+        streamStatus.textContent = 'No node available';
+        return;
+      }
+
+      // Fetch history for target nodes
+      for (const node of targetNodes) {
+        try {
+          const res = await fetch(`${node.url}/api/logs?limit=300`);
+          const data = await res.json();
+          if (data.logs && Array.isArray(data.logs)) {
+            data.logs.forEach(l => {
+              if (currentSelectedNodeId === 'all') {
+                l.nodeTag = node.name || node.id;
+              }
+              allEntries.push(l);
+            });
+          }
+        } catch {}
+      }
+
+      // Sort combined entries chronologically
+      allEntries.sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
+      renderAll();
+
+      // Connect SSE for each target node
+      let connectedCount = 0;
+      targetNodes.forEach(node => {
+        try {
+          const es = new EventSource(`${node.url}/api/logs/stream`);
+          activeEventSources.push(es);
+
+          es.onopen = () => {
+            connectedCount++;
+            streamDot.classList.add('connected');
+            streamStatus.textContent = currentSelectedNodeId === 'all'
+              ? `Connected (${connectedCount}/${targetNodes.length} nodes)`
+              : `Connected to ${node.name || node.id}`;
+          };
+
+          es.onmessage = (e) => {
+            try {
+              const entry = JSON.parse(e.data);
+              if (currentSelectedNodeId === 'all') {
+                entry.nodeTag = node.name || node.id;
+              }
+              appendEntry(entry);
+            } catch {}
+          };
+
+          es.onerror = () => {
+            connectedCount = Math.max(0, connectedCount - 1);
+            if (connectedCount === 0) {
+              streamDot.classList.remove('connected');
+              streamStatus.textContent = 'Reconnecting...';
+            }
+          };
+        } catch (err) {
+          console.error(`Failed to stream from ${node.url}:`, err);
+        }
+      });
+    }
+
+    function logout() {
+      sessionStorage.clear();
+      localStorage.removeItem('donut_session');
+      window.location.replace('login.html');
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      await loadLogNodes();
+      await loadLogsForSelection();
+    });
+  </script>
+</body>
+</html>

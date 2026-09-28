@@ -81,6 +81,9 @@ export class WebServer {
     const frontendDir = path.resolve(process.cwd(), 'donut-bots-frontend');
     if (fs.existsSync(frontendDir)) {
       this.app.use(express.static(frontendDir));
+      this.app.get('/', (_req, res) => {
+        res.sendFile(path.join(frontendDir, 'index.html'));
+      });
     }
   }
 

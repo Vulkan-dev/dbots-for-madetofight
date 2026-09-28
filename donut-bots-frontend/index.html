@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DonutSMP | Bedrock Client Console</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="style.css">
+
+  <style id="authGate">body { display: none !important; }</style>
+  <script>
+    (function() {
+      try {
+        var raw = sessionStorage.getItem('donut_session') || localStorage.getItem('donut_session');
+        if (!raw) { window.location.replace('login.html'); return; }
+        var s = JSON.parse(raw);
+        if (!s || !s.token || !s.exp || Date.now() > s.exp) {
+          sessionStorage.removeItem('donut_session');
+          localStorage.removeItem('donut_session');
+          window.location.replace('login.html');
+          return;
+        }
+        document.getElementById('authGate')?.remove();
+      } catch(e) {
+        window.location.replace('login.html');
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <div class="brand-symbol">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </div>
+          <div class="brand-meta">
+            <div class="brand-title-row">
+              <span class="brand-name">DONUT SMP</span>
+              <span class="badge-tag">BEDROCK CLIENT</span>
+            </div>
+            <span class="brand-desc">Autonomous Bedrock Operations & AFK Presence Console</span>
+          </div>
+        </div>
+        <nav class="nav-links">
+          <a href="index.html" class="active">Dashboard</a>
+          <a href="logs.html">Logs</a>
+          <a href="javascript:void(0)" onclick="logout()" style="color: var(--status-error); margin-left: 8px;">Logout</a>
+        </nav>
+      </div>
+
+      <div class="header-right">
+        <!-- NODE SELECTOR -->
+        <div class="target-bot-control">
+          <label for="nodeSelect" class="control-label">NODE</label>
+          <div class="select-container">
+            <select id="nodeSelect">
+              <option value="all" selected>🌐 All Nodes (All Bots)</option>
+            </select>
+            <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </div>
+        </div>
+
+        <div class="status-pill">
+          <span class="status-dot-active"></span>
+          <span class="pill-label">SERVER:</span>
+          <span class="pill-value" id="targetHostPort">donutsmp.net:19132</span>
+        </div>
+
+        <div class="status-pill">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+          </svg>
+          <span class="pill-label">CONNECTED BOTS:</span>
+          <span class="pill-value" id="accountCount">0</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Microsoft Device Authentication Banner -->
+    <div id="authNoticeContainer" class="auth-banner hidden">
+      <div class="auth-banner-inner">
+        <div class="auth-icon-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+        <div class="auth-body">
+          <div class="auth-heading">Microsoft Authentication Required</div>
+          <p id="authMessage">An account requires Xbox Live authorization. Open the verification URL and submit your code:</p>
+          <div class="auth-actions-row">
+            <a id="authLink" href="#" target="_blank" class="btn btn-auth">
+              <span>Open microsoft.com/link</span>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
+              </svg>
+            </a>
+            <div class="code-box">
+              <span class="code-label">USER CODE</span>
+              <span class="code-value" id="userCode">ABCD-1234</span>
+            </div>
+          </div>
+        </div>
+        <button onclick="dismissAuthNotice()" class="btn-icon-close" title="Dismiss">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="6"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Content Grid -->
+    <main class="main-content">
+      
+      <!-- SECTION 1: Action Toggles & Controls -->
+      <section class="panel action-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title">Action Toggles & Interactive Controls</h2>
+            <p class="panel-subtitle">Real-time player actions, stance control, and attack loops</p>
+          </div>
+
+          <div class="target-bot-control">
+            <label for="actionBotSelect" class="control-label">TARGET BOT</label>
+            <div class="select-container">
+              <select id="actionBotSelect">
+                <option value="all">All Connected Bots</option>
+              </select>
+              <svg class="select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="toggles-row">
+          <!-- Action: Throw Pearl (one-shot, not a toggle) -->
+          <div class="toggle-card action-card" id="cardThrowPearl">
+            <div class="toggle-top">
+              <div class="toggle-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="7"></circle>
+                  <circle cx="12" cy="12" r="2.5" fill="currentColor" fill-opacity="0.4"></circle>
+                </svg>
+              </div>
+              <button type="button" class="fire-button" onclick="triggerThrowPearl()" aria-label="Throw Pearl">
+                🫧 Throw
+              </button>
+            </div>
+            <div class="toggle-info">
+              <div class="toggle-name">Throw Pearl</div>
+              <div class="toggle-desc">Finds an ender pearl in hotbar and throws it</div>
+            </div>
+          </div>
+
+          <!-- Action: Sneak / Crouch (Always Toggle) -->
+          <div class="toggle-card" id="cardCrouch">
+            <div class="toggle-top">
+              <div class="toggle-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 3v12"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="5" y1="20" x2="19" y2="20"></line>
+                </svg>
+              </div>
+              <div class="toggle-state-badge">
+                <span class="state-indicator"></span>
+                <span class="toggle-text">OFF</span>
+              </div>
+              <button type="button" class="switch-button" id="btnToggleCrouch" onclick="triggerCrouch()" aria-label="Toggle Sneak / Always Crouch">
+                <span class="switch-handle"></span>
+              </button>
+            </div>
+            <div class="toggle-info">
+              <div class="toggle-name">Always Crouch</div>
+              <div class="toggle-desc">Continuous sneak stance — stays active across deaths & TPAs</div>
+            </div>
+          </div>
+
+          <!-- Action: Jump -->
+          <div class="toggle-card action-card" id="cardJump">
+            <div class="toggle-top">
+              <div class="toggle-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 21V9"></path>
+                  <polyline points="7 14 12 9 17 14"></polyline>
+                  <line x1="5" y1="4" x2="19" y2="4"></line>
+                </svg>
+              </div>
+              <button type="button" class="fire-button" id="btnJump" onclick="triggerJump()" aria-label="Jump">
+                ⬆️ Jump
+              </button>
+            </div>
+            <div class="toggle-info">
+              <div class="toggle-name">Jump</div>
+              <div class="toggle-desc">Executes tick-synchronized jump</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Toggle: Spam Left Click (Randomized Delay) -->
+        <div class="spam-panel" id="cardSpamClick">
+          <div class="spam-panel-header">
+            <div class="spam-header-left">
+              <div class="toggle-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="17 1 21 5 17 9"></polyline>
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                  <polyline points="7 23 3 19 7 15"></polyline>
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                </svg>
+              </div>
+              <div>
+                <div class="toggle-name">Spam Left click</div>
+                <div class="toggle-desc">Automated attack loop randomized between Min and Max delay</div>
+              </div>
+            </div>
+
+            <div class="spam-header-right">
+              <div class="toggle-state-badge">
+                <span class="state-indicator"></span>
+                <span class="toggle-text">OFF</span>
+              </div>
+              <button type="button" class="switch-button" id="btnToggleSpamClick" onclick="triggerSpamClick()" aria-label="Toggle Spam Click">
+                <span class="switch-handle"></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="spam-settings-row">
+            <div class="delay-field">
+              <label for="spamMinDelay">MIN DELAY</label>
+              <div class="delay-input-box">
+                <input type="number" id="spamMinDelay" value="100" min="20" step="10" placeholder="100">
+                <span class="unit-tag">ms</span>
+              </div>
+            </div>
+
+            <div class="delay-separator">
+              <span>to</span>
+            </div>
+
+            <div class="delay-field">
+              <label for="spamMaxDelay">MAX DELAY</label>
+              <div class="delay-input-box">
+                <input type="number" id="spamMaxDelay" value="250" min="20" step="10" placeholder="250">
+                <span class="unit-tag">ms</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Look Controls Section -->
+        <div class="look-controls-panel">
+          <div class="look-header">
+            <div class="look-header-left">
+              <div class="toggle-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <line x1="12" y1="2" x2="12" y2="6"></line>
+                  <line x1="12" y1="18" x2="12" y2="22"></line>
+                  <line x1="2" y1="12" x2="6" y2="12"></line>
+                  <line x1="18" y1="12" x2="22" y2="12"></line>
+                </svg>
+              </div>
+              <div>
+                <div class="toggle-name">Look Controls</div>
+                <div class="toggle-desc">Smooth head and crosshair orientation adjustment</div>
+              </div>
+            </div>
+
+            <div class="look-step-selectors">
+              <div class="look-step-selector">
+                <label for="lookStepDegrees">STEP:</label>
+                <select id="lookStepDegrees" class="look-select">
+                  <option value="5">5° (Fine)</option>
+                  <option value="15" selected>15° (Standard)</option>
+                  <option value="45">45° (Fast)</option>
+                  <option value="90">90° (Quarter Turn)</option>
+                </select>
+              </div>
+
+              <div class="look-step-selector">
+                <label for="moveStepBlocks">MOVE:</label>
+                <select id="moveStepBlocks" class="look-select">
+                  <option value="0.25">0.25 blocks</option>
+                  <option value="0.5" selected>0.5 blocks</option>
+                  <option value="0.75">0.75 blocks</option>
+                  <option value="1">1 block</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="look-dpad-container">
+            <div class="look-dpad">
+              <div class="dpad-row dpad-row-top">
+                <button type="button" class="btn-dpad" onclick="triggerLook('look_up')" aria-label="Look Up" title="Look Up">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="18 15 12 9 6 15"></polyline>
+                  </svg>
+                  <span>UP</span>
+                </button>
+              </div>
+              <div class="dpad-row dpad-row-middle">
+                <button type="button" class="btn-dpad" onclick="triggerLook('look_left')" aria-label="Look Left" title="Look Left">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                  </svg>
+                  <span>LEFT</span>
+                </button>
+                <div class="dpad-center">
+                  <span>AIM</span>
+                </div>
+                <button type="button" class="btn-dpad" onclick="triggerLook('look_right')" aria-label="Look Right" title="Look Right">
+                  <span>RIGHT</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </button>
+              </div>
+              <div class="dpad-row dpad-row-bottom">
+                <button type="button" class="btn-dpad" onclick="triggerLook('look_down')" aria-label="Look Down" title="Look Down">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                  <span>DOWN</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terminal Command Console -->
+        <div class="terminal-box">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <span class="terminal-label">COMMAND CONSOLE</span>
+            </div>
+            <div class="quick-commands">
+              <span class="quick-title">QUICK:</span>
+              <button type="button" class="quick-btn" onclick="sendQuickCommand('/tpaccept')">/tpaccept</button>
+              <button type="button" class="quick-btn" onclick="sendQuickCommand('/home 1')">/home 1</button>
+              <button type="button" class="quick-btn" onclick="sendQuickCommand('/home 2')">/home 2</button>
+              <button type="button" class="quick-btn" onclick="sendQuickCommand('/home 3')">/home 3</button>
+              <button type="button" class="quick-btn" onclick="sendQuickCommand('/sethome 1')">/sethome 1</button>
+              <button type="button" class="quick-btn" onclick="sendQuickCommand('/spawn')">/spawn</button>
+            </div>
+          </div>
+
+          <form id="chatConsoleForm" class="terminal-form" onsubmit="handleSendChat(event)">
+            <span class="terminal-prompt">&gt;</span>
+            <input type="text" id="chatMessageInput" placeholder="Enter in-game command (/tpaccept, /home 1) or chat message..." autocomplete="off" required>
+            <button type="submit" class="btn btn-terminal">Execute</button>
+          </form>
+          <div id="chatFeedback" class="terminal-log"></div>
+        </div>
+      </section>
+
+      <!-- SECTION 2: Accounts Matrix -->
+      <section class="panel accounts-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title">Managed Accounts Roster</h2>
+            <p class="panel-subtitle">Session authentication, live coordinates, and connection control</p>
+          </div>
+          <div class="panel-header-actions" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" id="btnGroupAccounts" onclick="toggleGroupSelectionMode()" style="border-color:#a855f7; color:#c084fc; font-weight:600; cursor:pointer;" title="Group accounts into collapsible folders">
+              📁 Group
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="tpacceptAllAccounts()" style="border-color:#38bdf8; color:#38bdf8; font-weight:600; cursor:pointer;" title="Accept all pending teleport requests">
+              🤝 Tpaccept All
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="connectAllAccounts()" style="border-color:#22c55e; color:#22c55e; font-weight:600; cursor:pointer;" title="Connect all bots on selected node or all nodes">
+              ⚡ Connect All
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="disconnectAllAccounts()" style="border-color:#ef4444; color:#ef4444; font-weight:600; cursor:pointer;" title="Disconnect all bots on selected node or all nodes">
+              🔌 Disconnect All
+            </button>
+          </div>
+        </div>
+
+        <!-- Group Selection Banner (shown when Group button is clicked) -->
+        <div id="groupSelectionBanner" class="group-selection-banner" style="display: none;">
+          <div class="group-banner-content">
+            <span class="group-banner-text">Select 2 accounts to group together: <strong id="selectedGroupCount">0</strong> selected</span>
+            <div class="group-banner-actions">
+              <button type="button" class="btn btn-primary btn-sm" id="btnConfirmGroup" onclick="confirmAccountGrouping()" disabled style="background:#a855f7; border-color:#a855f7; color:#ffffff; font-weight:700;">
+                Create Group Folder
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="cancelGroupSelectionMode()">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="modern-table">
+            <thead>
+              <tr>
+                <th>ACCOUNT</th>
+                <th>GAMERTAG / IGN</th>
+                <th>EMAIL</th>
+                <th>NODE</th>
+                <th>STATUS</th>
+                <th>COORDINATES</th>
+                <th class="col-actions">ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody id="accountsTableBody">
+              <tr>
+                <td colspan="7" class="empty-state">
+                  <div class="empty-state-text">Loading account records...</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Subpanel: Add Account via Link Login -->
+        <div class="onboard-section">
+          <div class="onboard-header">
+            <h3 class="onboard-title">Add Account</h3>
+            <span class="onboard-sub">Enter an account identifier to start Microsoft device code authentication</span>
+          </div>
+          <form id="linkLoginForm" class="onboard-form">
+            <div class="form-row">
+              <div class="input-group">
+                <label for="linkAccId">Account Identifier <span style="color:var(--status-connected); font-weight:600;">*</span></label>
+                <input type="text" id="linkAccId" placeholder="e.g. 1, 2, 3" required>
+              </div>
+              <div class="input-group">
+                <label for="linkAccEmail">Account Login Email <span style="color:var(--status-connected); font-weight:600;">*</span></label>
+                <input type="email" id="linkAccEmail" placeholder="e.g. your_account@outlook.com" required>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary btn-link-login">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+              Login via /link
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- New dedicated section: AFK Spot Management -->
+      <section class="panel afk-spot-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title">AFK Spot Management</h2>
+            <p class="panel-subtitle">Saved AFK location per bot, with reset and monitor pause/resume controls</p>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="modern-table">
+            <thead>
+              <tr>
+                <th>BOT</th>
+                <th>LOCATION</th>
+                <th>RESET</th>
+                <th>STOP MONITORING</th>
+              </tr>
+            </thead>
+            <tbody id="afkSpotTableBody">
+              <tr>
+                <td colspan="4" class="empty-state">
+                  <div class="empty-state-text">Loading AFK spot records...</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Dedicated Section: Trusted Players (Radar Whitelist) -->
+      <section class="panel trusted-players-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title">Trusted Players (Radar Whitelist)</h2>
+            <p class="panel-subtitle">Whitelisted players ignored by detection alerts, movement radar, and Discord notifications</p>
+          </div>
+          <div class="panel-header-actions">
+            <span class="badge-tag" id="trustedPlayersCount" style="color:var(--status-connected); border-color:rgba(34, 197, 94, 0.3);">0 Players</span>
+          </div>
+        </div>
+
+        <div class="onboard-section" style="margin-top: 0; padding-top: 0; border-top: none;">
+          <form id="addTrustedPlayerForm" class="onboard-form" onsubmit="handleAddTrustedPlayer(event)">
+            <div class="form-row" style="grid-template-columns: 1fr auto; align-items: flex-end; gap: 12px;">
+              <div class="input-group" style="flex: 1;">
+                <label for="trustedPlayerInput">Player Name or Gamertag <span style="color:var(--status-connected); font-weight:600;">*</span></label>
+                <input type="text" id="trustedPlayerInput" placeholder="e.g. Gamer123, .CruelWater4427" autocomplete="off" required>
+              </div>
+              <button type="submit" class="btn btn-primary" id="btnAddTrustedPlayer" style="height: 42px; display: inline-flex; align-items: center; gap: 6px; padding: 0 18px;">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                Add Trusted Player
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div class="table-container" style="margin-top: 14px;">
+          <table class="modern-table">
+            <thead>
+              <tr>
+                <th>PLAYER</th>
+                <th>STATUS</th>
+                <th class="col-actions">ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="trustedPlayersTableBody">
+              <tr>
+                <td colspan="3" class="empty-state">
+                  <div class="empty-state-text">No trusted players added yet.</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Auth Code Modal — Microsoft sign-in / Xbox profile states -->
+      <div id="authCodeModal" class="modal-overlay hidden">
+        <div class="modal-dialog">
+          <!-- State: Microsoft device code sign-in -->
+          <div id="authStateMicrosoft">
+            <div class="modal-header">
+              <div class="modal-title-group">
+                <h3 class="modal-title">Microsoft Sign-In Required</h3>
+                <p class="modal-desc">Open the link below and enter the code to finish logging in <strong id="authCodeBotName"></strong></p>
+              </div>
+            </div>
+            <div class="modal-body">
+              <div class="input-group">
+                <label>Verification Link</label>
+                <div class="copy-row">
+                  <input type="text" id="authCodeLink" readonly>
+                  <a id="authCodeLinkOpen" class="btn btn-secondary" href="#" target="_blank" rel="noopener">Open</a>
+                </div>
+              </div>
+              <div class="input-group">
+                <label>Code</label>
+                <div class="copy-row">
+                  <input type="text" id="authCodeValue" readonly>
+                  <button type="button" id="authCodeCopyBtn" class="btn btn-secondary">Copy</button>
+                </div>
+              </div>
+              <p class="setting-desc" id="authCodeStatus">Waiting for you to complete sign-in...</p>
+            </div>
+          </div>
+
+          <!-- State: No Xbox account found -->
+          <div id="authStateNoXbox" class="hidden">
+            <div class="modal-header">
+              <div class="modal-title-group">
+                <h3 class="modal-title" style="color: var(--status-connecting);">Xbox Account Not Found</h3>
+                <p class="modal-desc">Microsoft sign-in succeeded for <strong id="authNoXboxBotName"></strong>, but no Xbox account was detected.</p>
+              </div>
+            </div>
+            <div class="modal-body">
+              <div style="padding: 16px; background: var(--bg-panel-elevated); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+                <p style="color: var(--text-body); font-size: 0.85rem; line-height: 1.6;">
+                  You need to create an Xbox profile before this account can join the server.<br><br>
+                  1. Go to <a href="https://www.xbox.com/play" target="_blank" style="color: #60a5fa;">xbox.com/play</a> and sign in with the same Microsoft account<br>
+                  2. Create your Xbox profile (gamertag)<br>
+                  3. Come back and click <strong>Retry</strong> below
+                </p>
+              </div>
+              <p class="setting-desc" id="authNoXboxStatus" style="margin-top: 10px;"></p>
+            </div>
+          </div>
+
+          <!-- State: Xbox profile exists but not ready -->
+          <div id="authStateXboxNotReady" class="hidden">
+            <div class="modal-header">
+              <div class="modal-title-group">
+                <h3 class="modal-title" style="color: var(--status-connecting);">Xbox Profile Not Ready</h3>
+                <p class="modal-desc"><strong id="authXboxNRBotName"></strong> has an Xbox profile (<span id="authXboxNRGamertag"></span>) but it's not fully set up yet.</p>
+              </div>
+            </div>
+            <div class="modal-body">
+              <div style="padding: 16px; background: var(--bg-panel-elevated); border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+                <p style="color: var(--text-body); font-size: 0.85rem; line-height: 1.6;">
+                  The Xbox profile needs to complete setup before it can join Minecraft servers.<br><br>
+                  1. Go to <a href="https://www.xbox.com/play" target="_blank" style="color: #60a5fa;">xbox.com/play</a><br>
+                  2. Complete any pending profile setup steps<br>
+                  3. Make sure you can launch Minecraft and join a world<br>
+                  4. Come back and click <strong>Retry</strong> below
+                </p>
+              </div>
+              <p class="setting-desc" id="authXboxNRStatus" style="margin-top: 10px;"></p>
+            </div>
+          </div>
+
+          <!-- State: Signed in successfully -->
+          <div id="authStateSuccess" class="hidden">
+            <div class="modal-header">
+              <div class="modal-title-group">
+                <h3 class="modal-title" style="color: var(--status-online);">Signed In Successfully</h3>
+                <p class="modal-desc" id="authSuccessMsg">Authentication complete. The bot is connecting...</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" id="authCodeRetryBtn" class="btn btn-primary hidden" onclick="retryAuthFromModal()">Retry</button>
+            <button type="button" id="authCodeCloseBtn" class="btn btn-primary">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION 3: Settings & Guard Rules -->
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h2 class="panel-title">Automation & Guard Rules</h2>
+            <p class="panel-subtitle">Anti-idle pulse, defensive retaliation, and webhook logs</p>
+          </div>
+        </div>
+
+        <form id="settingsForm" class="settings-form">
+          <div class="input-group full-width">
+            <label for="webhookEndpoint">Discord Webhook Notification URL</label>
+            <input type="url" id="webhookEndpoint" placeholder="https://discord.com/api/webhooks/...">
+          </div>
+
+          <div class="settings-grid">
+            <!-- Setting 1: AFK Anti-Idle -->
+            <div class="setting-item">
+              <div class="setting-header">
+                <span class="setting-name">AFK Anti-Idle Pulse</span>
+                <label class="switch-small">
+                  <input type="checkbox" id="afkEnabled">
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+              <p class="setting-desc">Sends arm swing packet periodically to avoid server idle kicks</p>
+              <div class="setting-field">
+                <label for="afkInterval">Interval (ms)</label>
+                <input type="number" id="afkInterval" min="5000" step="1000" value="30000">
+              </div>
+            </div>
+
+            <!-- Setting 2: Defensive Combat -->
+            <div class="setting-item">
+              <div class="setting-header">
+                <span class="setting-name">Defensive Mob Combat</span>
+                <label class="switch-small">
+                  <input type="checkbox" id="combatEnabled">
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+              <p class="setting-desc">Auto-retaliates against hostile mobs within engagement radius</p>
+              <div class="setting-field">
+                <label for="combatRange">Max Range (Blocks)</label>
+                <input type="number" id="combatRange" min="1.0" max="6.0" step="0.5" value="4.5">
+              </div>
+            </div>
+
+            <!-- Setting 3: Player Hit Crouch -->
+            <div class="setting-item">
+              <div class="setting-header">
+                <span class="setting-name">Player Hit Peace Gesture</span>
+                <label class="switch-small">
+                  <input type="checkbox" id="hitReactionEnabled">
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+              <p class="setting-desc">Crouches repeatedly when damaged to signal friendly presence</p>
+              <div class="setting-field">
+                <label for="crouchCount">Crouch Count</label>
+                <input type="number" id="crouchCount" min="1" max="5" value="2">
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-footer">
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+          </div>
+        </form>
+      <!-- SECTION 4: Database Backup & Restore -->
+      <section class="panel backup-panel" style="margin-top: 24px;">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div class="panel-title-group">
+            <h2 class="panel-title" style="display: flex; align-items: center; gap: 8px;">
+              <span>💾 System Database Backup & Restore</span>
+            </h2>
+            <p class="panel-subtitle">Export all critical records (accounts, nodes, and tokens) or completely replace database records with a backup file</p>
+          </div>
+          <div class="backup-actions" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button type="button" id="btnBackupAll" class="btn btn-primary" onclick="backupAllToSecondary()" style="display: flex; align-items: center; gap: 6px; background: #0ea5e9; border-color: #0ea5e9; font-weight: 700; cursor: pointer;" title="Backup all data to Secondary Supabase (excluding logs or junk files)">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 11H5m14 0a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2m14 0V9a2 2 0 0 0-2-2M5 11V9a2 2 0 0 1 2-2m0 0V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2M7 7h10"></path>
+              </svg>
+              Backup All
+            </button>
+            <button type="button" id="btnLoadSecondaryBackup" class="btn btn-secondary" onclick="loadBackupFromSecondary()" style="display: flex; align-items: center; gap: 6px; border-color: #10b981; color: #34d399; font-weight: 700; cursor: pointer;" title="Load all backup data from Secondary Supabase into Primary Supabase">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+              </svg>
+              Load Backup
+            </button>
+            <button type="button" id="btnDownloadBackup" class="btn btn-secondary" onclick="downloadBackup()" style="display: flex; align-items: center; gap: 6px; border-color: #38bdf8; color: #38bdf8; font-weight: 600; cursor: pointer;" title="Download JSON backup file to your computer">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Download Backup
+            </button>
+            <button type="button" id="btnExportBackup" class="btn btn-secondary" onclick="exportSystemBackup()" style="display: flex; align-items: center; gap: 6px; border-color: #38bdf8; color: #38bdf8; font-weight: 600; cursor: pointer;" title="Export system backup JSON">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Export Backup
+            </button>
+            <label for="importBackupFileInput" class="btn btn-primary" style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: #6366f1; border-color: #6366f1; font-weight: 600; margin-bottom: 0;">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              Import Backup
+              <input type="file" id="importBackupFileInput" accept=".json" style="display: none;" onchange="importSystemBackup(event)">
+            </label>
+            <button type="button" id="btnClearDatabase" class="btn btn-danger" onclick="openClearDatabaseModal()" style="display: flex; align-items: center; gap: 6px; background: #ef4444; border-color: #dc2626; color: #ffffff; font-weight: 700; cursor: pointer;" title="Clear selected tables (NODE / ACCOUNTS) from database">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                <line x1="10" y1="11" x2="10" y2="17"></line>
+                <line x1="14" y1="11" x2="14" y2="17"></line>
+              </svg>
+              Clear
+            </button>
+          </div>
+        </div>
+        <div id="backupStatusBanner" style="display: none; margin-top: 12px; padding: 10px 14px; border-radius: 6px; font-size: 0.85rem;"></div>
+      </section>
+
+    </main>
+
+    <!-- Confirmation Modal Dialog for Account Removal -->
+    <div id="confirmModal" class="modal-overlay hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <div class="modal-icon-warning">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+              <line x1="12" y1="9" x2="12" y2="13"></line>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+          </div>
+          <div class="modal-title-group">
+            <h3 class="modal-title" id="confirmModalTitle">Remove Account</h3>
+            <p class="modal-desc" id="confirmModalMessage">Are you sure you want to remove this account?</p>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="confirmBtnCancel" class="btn btn-secondary">No, Cancel</button>
+          <button id="confirmBtnProceed" class="btn btn-danger">Yes, Remove</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clear Database Modal Dialog -->
+    <div id="clearDatabaseModal" class="modal-overlay hidden">
+      <div class="modal-dialog" style="max-width: 440px;">
+        <div class="modal-header">
+          <div class="modal-icon-warning" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border-color: rgba(239, 68, 68, 0.3);">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+              <line x1="12" y1="9" x2="12" y2="13"></line>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+          </div>
+          <div class="modal-title-group">
+            <h3 class="modal-title">Clear Database Records</h3>
+            <p class="modal-desc">Select which database components to safely wipe. Active bots will be cleanly disconnected first.</p>
+          </div>
+        </div>
+        <div class="modal-body" style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 12px 14px;">
+            <div style="font-size: 0.85rem; font-weight: 600; color: #94a3b8; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em;">Components to Clear</div>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.95rem; font-weight: 600; color: #f1f5f9;">
+                <input type="checkbox" id="clearNodesCheckbox" style="width: 18px; height: 18px; accent-color: #ef4444; cursor: pointer;">
+                <span>NODE (Worker Nodes)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.95rem; font-weight: 600; color: #f1f5f9;">
+                <input type="checkbox" id="clearAccountsCheckbox" style="width: 18px; height: 18px; accent-color: #ef4444; cursor: pointer;" checked>
+                <span>ACCOUNTS (Bots, Tokens, and Locations)</span>
+              </label>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <label for="clearAdminPasswordInput" style="font-size: 0.85rem; font-weight: 600; color: #cbd5e1;">Admin Authentication Password</label>
+            <input type="password" id="clearAdminPasswordInput" placeholder="Enter API secret / Admin password" style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 6px; padding: 10px 12px; color: #f8fafc; font-size: 0.9rem; outline: none; transition: border-color 0.2s;" onfocus="this.style.borderColor='#ef4444'" onblur="this.style.borderColor='rgba(255, 255, 255, 0.15)'">
+            <span style="font-size: 0.75rem; color: #94a3b8;">Required to verify authorization before clearing database tables.</span>
+          </div>
+          <div id="clearModalError" style="display: none; padding: 8px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; color: #fca5a5; font-size: 0.85rem;"></div>
+        </div>
+        <div class="modal-actions" style="padding: 16px 20px;">
+          <button type="button" class="btn btn-secondary" onclick="closeClearDatabaseModal()">Cancel</button>
+          <button type="button" id="btnConfirmClearDatabase" class="btn btn-danger" onclick="submitClearDatabase()" style="background: #ef4444; border-color: #dc2626; font-weight: 700;">Confirm & Clear</button>
+        </div>
+      </div>
+    </div>
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span>DonutSMP Bedrock Operations Client</span>
+        <span class="footer-dot">•</span>
+        <span>Geyser / Paper Protocol Synced</span>
+      </div>
+      <div class="footer-right">
+        <span>bedrock-protocol v1.26.45</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Prank Video Layer -->
+  <div id="scare">
+    <video id="scareVideo" src="scare.mp4" playsinline preload="auto"></video>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
