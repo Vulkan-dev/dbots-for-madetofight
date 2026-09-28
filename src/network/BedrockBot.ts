@@ -1191,7 +1191,29 @@ export class BedrockBot extends EventEmitter {
         const sender = packet.source_name || packet.type || 'SERVER';
         const message = packet.message || (packet.parameters ? packet.parameters.join(' ') : '');
         if (message) {
-          logger.info(`[CHAT] [${sender}]: ${message}`, this.accountId);
+          const typeStr = String(packet.type || '').toLowerCase();
+          const isWhisper =
+            typeStr === 'whisper' ||
+            typeStr === 'tell' ||
+            /whisper|tell|\bmsg\b|\[.*->.*\]|-> me|\bfrom\b|\(from\b/i.test(message);
+
+          const isCommandFeedbackOrSystem =
+            typeStr === 'system' ||
+            typeStr === 'translation' ||
+            typeStr === 'json' ||
+            typeStr === 'popup' ||
+            typeStr === 'tip' ||
+            sender === 'SERVER' ||
+            sender === 'system' ||
+            /teleport|tpaccept|tpa|home|spawn|balance|vault|claim|combat|server|donut|shop|auction|buy|sell|paid|received|money|succes/i.test(message);
+
+          const isPublicChat = (typeStr === 'chat' || typeStr === 'text' || packet.type === 1 || packet.type === 2) && !isWhisper && !isCommandFeedbackOrSystem;
+
+          if (!isPublicChat) {
+            const prefix = isWhisper ? '[PRIVATE MSG]' : '[SERVER MSG]';
+            logger.info(`${prefix} [${sender}]: ${message}`, this.accountId);
+          }
+
           this.handleTeleportRequest(packet);
         }
       } catch (err) {
