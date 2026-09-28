@@ -75,35 +75,33 @@ async function main() {
 ====================================================================
 `);
 
-  // ── Supabase schema check ──────────────────────────────────────────────────
-  logger.info('Checking Supabase connection and schema...');
+  // ── Database schema check ──────────────────────────────────────────────────
+  logger.info('Checking Railway PostgreSQL connection and schema...');
   await initSupabaseSchema();
 
-  // ── Register this node in Supabase ──────────────────────────────────────────
+  // ── Register this node in Database ──────────────────────────────────────────
   try {
     await registerNode(config.nodeId, config.nodeName, config.nodeUrl, config.nodeOwner);
-    logger.info(`Node '${config.nodeId}' registered in Supabase at ${config.nodeUrl}`);
+    logger.info(`Node '${config.nodeId}' registered in Railway PostgreSQL at ${config.nodeUrl}`);
   } catch (err: any) {
     logger.error(`CRITICAL: Failed to register node '${config.nodeId}': ${err.message}`);
-    logger.error('Node will not appear in the frontend. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
-    logger.error('Make sure the backend_nodes table exists in Supabase (run the schema SQL).');
   }
 
-  // ── Load node settings from Supabase ────────────────────────────────────────
+  // ── Load node settings from Database ────────────────────────────────────────
   try {
     const savedSettings = await getNodeSettings(config.nodeId);
     if (savedSettings) {
       applyNodeSettings(savedSettings);
-      logger.info('Applied node settings from Supabase');
+      logger.info('Applied node settings from Railway PostgreSQL');
     }
   } catch (err: any) {
     logger.debug(`Failed to load node settings: ${err.message}`);
   }
 
-  // ── Account Manager + load accounts from Supabase ──────────────────────────
+  // ── Account Manager + load accounts from Database ──────────────────────────
   const manager = new AccountManager(config);
   await manager.loadAccountsFromSupabase();
-  logger.info(`Loaded ${manager.getAllBots().length} bot(s) from Supabase`);
+  logger.info(`Loaded ${manager.getAllBots().length} bot(s) from Railway PostgreSQL`);
 
   // ── Auto-connect bots ───────────────────────────────────────────────────────
   manager.connectAutoConnectAccounts();
