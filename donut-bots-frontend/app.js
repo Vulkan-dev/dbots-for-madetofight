@@ -20,7 +20,13 @@ const globalActionToggles = {
 
 // ── Supabase Init ────────────────────────────────────────────────────
 function initSupabase() {
-  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  if (typeof SUPABASE_URL !== 'undefined' && SUPABASE_URL && typeof window.supabase !== 'undefined' && typeof window.supabase.createClient === 'function') {
+    try {
+      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    } catch (e) {
+      console.warn('Supabase client init skipped:', e);
+    }
+  }
 }
 
 function queueSupabaseCommand(nodeId, accountId, action, payload = {}) {
@@ -2184,31 +2190,36 @@ let realtimeDebounceTimer = null;
 let nodesDebounceTimer = null;
 
 function subscribeToChanges() {
-  supabaseClient
-    .channel('accounts-changes')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'accounts' }, () => {
-      if (realtimeDebounceTimer) return;
-      realtimeDebounceTimer = setTimeout(() => {
-        realtimeDebounceTimer = null;
-        if (currentNode) {
-          loadAccountsFromSupabase();
-        } else {
-          loadAllAccountsFromSupabase();
-        }
-      }, 5000);
-    })
-    .subscribe();
+  if (!supabaseClient || typeof supabaseClient.channel !== 'function') return;
+  try {
+    supabaseClient
+      .channel('accounts-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'accounts' }, () => {
+        if (realtimeDebounceTimer) return;
+        realtimeDebounceTimer = setTimeout(() => {
+          realtimeDebounceTimer = null;
+          if (currentNode) {
+            loadAccountsFromSupabase();
+          } else {
+            loadAllAccountsFromSupabase();
+          }
+        }, 5000);
+      })
+      .subscribe();
 
-  supabaseClient
-    .channel('nodes-changes')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'backend_nodes' }, () => {
-      if (nodesDebounceTimer) return;
-      nodesDebounceTimer = setTimeout(() => {
-        nodesDebounceTimer = null;
-        loadNodes();
-      }, 5000);
-    })
-    .subscribe();
+    supabaseClient
+      .channel('nodes-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'backend_nodes' }, () => {
+        if (nodesDebounceTimer) return;
+        nodesDebounceTimer = setTimeout(() => {
+          nodesDebounceTimer = null;
+          loadNodes();
+        }, 5000);
+      })
+      .subscribe();
+  } catch (e) {
+    console.debug('Realtime subscription skipped:', e);
+  }
 }
 
 // ── Init ─────────────────────────────────────────────────────────────
