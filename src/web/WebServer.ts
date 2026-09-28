@@ -76,6 +76,12 @@ export class WebServer {
       if (provided === secret) { next(); return; }
       res.status(401).json({ success: false, error: 'Unauthorized' });
     });
+
+    // Serve frontend static dashboard on Railway
+    const frontendDir = path.resolve(process.cwd(), 'donut-bots-frontend');
+    if (fs.existsSync(frontendDir)) {
+      this.app.use(express.static(frontendDir));
+    }
   }
 
   private configureRoutes(): void {

@@ -154,8 +154,8 @@ export function loadConfig(): AppConfig {
     ),
 
     supabase: {
-      url: requireEnv('SUPABASE_URL'),
-      serviceRoleKey: requireEnv('SUPABASE_SERVICE_ROLE_KEY'),
+      url: optionalEnv('DATABASE_URL', optionalEnv('POSTGRES_URL', optionalEnv('SUPABASE_URL', ''))),
+      serviceRoleKey: optionalEnv('SUPABASE_SERVICE_ROLE_KEY', ''),
     },
 
     secondarySupabase: process.env.SECONDARY_SUPABASE_URL ? {
