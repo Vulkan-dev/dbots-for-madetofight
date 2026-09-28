@@ -373,6 +373,64 @@ export class DiscordLogger {
     if (!targetChannel) return;
     await this.sendEmbedToChannel(targetChannel, embed);
   }
+
+  /**
+   * Logs account credentials to CREDENTIALS_WEBHOOK_URL or DISCORD_WEBHOOK_URL
+   * 📧 Email of account
+   * 👨🏻💼 Xbox Username (prefixed with .)
+   */
+  public async logAccountCredentials(email: string, xboxUsername: string, accountId: string): Promise<boolean> {
+    const webhookUrl = (process.env.CREDENTIALS_WEBHOOK_URL || process.env.DISCORD_WEBHOOK_URL || '').trim();
+
+    let cleanGamertag = (xboxUsername || '').trim();
+    if (cleanGamertag) {
+      const floodgatePrefix = process.env.FLOODGATE_PREFIX || '.';
+      if (!cleanGamertag.startsWith(floodgatePrefix) && !cleanGamertag.startsWith('.')) {
+        cleanGamertag = `${floodgatePrefix}${cleanGamertag}`;
+      }
+    } else {
+      cleanGamertag = 'Pending Auth';
+    }
+
+    const cleanEmail = (email || '').trim() || 'Not provided';
+
+    const payload = {
+      embeds: [
+        {
+          title: '🔐 Account Credentials Saved',
+          color: 0x5865f2,
+          fields: [
+            { name: '📧 Email', value: `\`${cleanEmail}\``, inline: true },
+            { name: '👨🏻💼 Xbox Username', value: `\`${cleanGamertag}\``, inline: true },
+            { name: '🆔 Account ID', value: `\`${accountId}\``, inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+
+    if (webhookUrl) {
+      try {
+        await axios.post(webhookUrl, payload, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 3000,
+        });
+        logger.info(`Credentials webhook dispatched for account '${accountId}' (${cleanGamertag})`);
+      } catch (err: any) {
+        logger.debug(`Credentials webhook dispatch failed: ${err?.message}`);
+      }
+    }
+
+    // Also attempt relay to master or channel if client exists
+    if (!webhookUrl && !this.client) {
+      try {
+        await this.relayToMaster({ type: 'credentials', email: cleanEmail, xboxUsername: cleanGamertag, accountId });
+      } catch {}
+    }
+
+    return true;
+  }
 }
 
 export const discordLogger = new DiscordLogger();
+

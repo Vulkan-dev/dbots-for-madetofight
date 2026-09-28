@@ -402,6 +402,10 @@ export class AccountManager extends EventEmitter {
   public scheduleAccountConnect(accountId: string): boolean {
     const bot = this.bots.get(accountId);
     if (!bot) { logger.warn(`Cannot connect '${accountId}': not registered`); return false; }
+    if (bot.authManager.getAccountStatus() === 'VERIFICATION_REQUIRED' as any) {
+      logger.debug(`Account '${accountId}' is pending Microsoft verification code. Skipping schedule.`, accountId);
+      return false;
+    }
     bot.autoConnect = true;
     updateAccountFields(accountId, { node_id: this.appConfig.nodeId, auto_connect: true }).catch(() => {});
     const state = bot.getState();
