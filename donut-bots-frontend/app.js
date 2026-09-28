@@ -53,7 +53,7 @@ function getBackendUrl() {
   if (master && master.url) return master.url;
   const first = allNodes.find(n => n.url);
   if (first) return first.url;
-  return '';
+  return window.location.origin;
 }
 
 // ── Backend API helper ───────────────────────────────────────────────
@@ -62,14 +62,14 @@ async function backendPost(path, body) {
   let node;
   if (nodeId) {
     node = allNodes.find(n => n.id === nodeId);
-  } else {
+  } else if (body.accountId) {
     node = getNodeForBot(body.accountId);
   }
-  if (!node) { showTemporaryToast('Node not found — is the backend running?'); return null; }
+  let baseUrl = (node && node.url) ? node.url : (getBackendUrl() || window.location.origin);
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
-    const res = await fetch(`${node.url}${path}`, {
+    const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -186,14 +186,17 @@ function deduplicateAccounts(accounts) {
 // ── Node Management ──────────────────────────────────────────────────
 async function loadNodes() {
   try {
-    const { data, error } = await supabaseClient
-      .from('backend_nodes')
-      .select('*');
-    if (error) throw error;
-    allNodes = sortNodes(data || []);
+    const res = await backendGet(`${getBackendUrl()}/api/nodes`);
+    let nodes = (res && Array.isArray(res.nodes)) ? res.nodes : [];
+    if (nodes.length === 0) {
+      nodes = [{ id: 'node-1', name: 'Main Service', url: window.location.origin, status: 'online' }];
+    }
+    allNodes = sortNodes(nodes);
     renderNodeSelector();
   } catch (err) {
     console.error('Failed to load nodes:', err);
+    allNodes = [{ id: 'node-1', name: 'Main Service', url: window.location.origin, status: 'online' }];
+    renderNodeSelector();
   }
 }
 
@@ -203,9 +206,7 @@ function renderNodeSelector() {
   const select = document.getElementById('nodeSelect');
   const prev = select.value;
   if (allNodes.length === 0) {
-    select.innerHTML = '<option value="all">🌐 All Nodes (All Bots)</option>';
-    loadAllAccountsFromSupabase();
-    return;
+    allNodes = [{ id: 'node-1', name: 'Main Service', url: window.location.origin, status: 'online' }];
   }
   allNodes = sortNodes(allNodes);
 
@@ -246,17 +247,12 @@ async function onNodeChange() {
   await fetchStatus();
 }
 
-// ── Accounts from Supabase ───────────────────────────────────────────
+// ── Accounts from Backend API ─────────────────────────────────────────
 async function loadAccountsFromSupabase() {
-  if (!currentNode) return;
   try {
-    const { data, error } = await supabaseClient
-      .from('accounts')
-      .select('*')
-      .eq('node_id', currentNode.id)
-      .order('id', { ascending: true });
-    if (error) throw error;
-    cachedDbAccounts = data || [];
+    const res = await backendGet(`${getBackendUrl()}/api/status`);
+    const data = (res && Array.isArray(res.accounts)) ? res.accounts : [];
+    cachedDbAccounts = data;
     latestAccounts = sortAccounts(cachedDbAccounts);
     syncGroupsFromDbAccounts(cachedDbAccounts);
     renderAccountsTable();
@@ -268,12 +264,9 @@ async function loadAccountsFromSupabase() {
 
 async function loadAllAccountsFromSupabase() {
   try {
-    const { data, error } = await supabaseClient
-      .from('accounts')
-      .select('*')
-      .order('id', { ascending: true });
-    if (error) throw error;
-    cachedDbAccounts = data || [];
+    const res = await backendGet(`${getBackendUrl()}/api/status`);
+    const data = (res && Array.isArray(res.accounts)) ? res.accounts : [];
+    cachedDbAccounts = data;
     latestAccounts = deduplicateAccounts(cachedDbAccounts);
     syncGroupsFromDbAccounts(cachedDbAccounts);
     renderAccountsTable();
