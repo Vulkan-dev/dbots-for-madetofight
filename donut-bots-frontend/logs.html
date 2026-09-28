@@ -204,14 +204,18 @@
 
     async function loadLogNodes() {
       try {
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-        const { data } = await supabase.from('backend_nodes').select('*').order('created_at', { ascending: true });
-        if (data && data.length > 0) {
-          allNodes = data;
-          renderNodeDropdown();
+        const res = await fetch(`${window.location.origin}/api/nodes`);
+        const data = await res.json();
+        let nodes = (data && Array.isArray(data.nodes)) ? data.nodes : [];
+        if (nodes.length === 0) {
+          nodes = [{ id: 'node-1', name: 'Main Service', url: window.location.origin, status: 'online' }];
         }
+        allNodes = nodes;
+        renderNodeDropdown();
       } catch (e) {
         console.error('Failed to load nodes in logs:', e);
+        allNodes = [{ id: 'node-1', name: 'Main Service', url: window.location.origin, status: 'online' }];
+        renderNodeDropdown();
       }
     }
 
